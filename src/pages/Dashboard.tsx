@@ -18,7 +18,6 @@ import {
   Flame,
   LogOut,
   Thermometer,
-  Wind,
   Layers,
   RefreshCw,
   Satellite,
@@ -191,7 +190,6 @@ export default function Dashboard() {
   }));
 
   const hotspotsOk = hotspots.length > 0;
-  const weatherOk = weather.length > 0;
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -217,9 +215,12 @@ export default function Dashboard() {
         {/* ── Carte ───────────────────────────────────────────── */}
         <main className="relative flex flex-1 flex-col">
           <MapContainer>
-            <HotspotLayer map={null as unknown as any} hotspots={hotspots} visible={layers.hotspots} />
-            <IsothermLayer map={null as unknown as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
-            <WindParticlesLayer map={null as unknown as any} windData={{ grid: windGrid }} visible={layers.wind} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <HotspotLayer map={null as any} hotspots={hotspots} visible={layers.hotspots} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <IsothermLayer map={null as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
           </MapContainer>
 
           {/* ── Overlay risque ───────────────────────────────── */}

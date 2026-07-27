@@ -249,7 +249,7 @@ function generateSampleData(layer: string, format: string): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getSampleGeoJSON(layer: string): Record<string, any> {
+function getSampleGeoJSON(layer: string): any {
   const features = [];
   const coords = [
     [-0.65, 44.85],
