@@ -19,6 +19,9 @@ import HotspotLayer from "@/components/HotspotLayer";
 import type { HotspotData } from "@/components/HotspotLayer";
 import WindParticlesLayer from "@/components/WindParticlesLayer";
 import IsothermLayer from "@/components/IsothermLayer";
+import RiskLayer from "@/components/RiskLayer";
+import SpreadEllipseLayer from "@/components/SpreadEllipseLayer";
+import RiskDecompositionPanel from "@/components/RiskDecompositionPanel";
 import {
   AlertTriangle,
   Eye,
@@ -31,6 +34,8 @@ import {
   Layers,
   Info,
   SlidersHorizontal,
+  ArrowRightLeft,
+  Grip,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -49,6 +54,35 @@ interface LayerToggle {
   eta: string;
 }
 
+interface RiskCellData {
+  cell_id: number; lat: number; lon: number;
+  ignition_risk: number; spread_risk: number; combined_score: number;
+  dominant: "ignition" | "spread" | "equal"; risk_class: string;
+  fuel_species?: string;
+}
+
+interface EllipseData {
+  horizon_h: number; center_lon: number; center_lat: number;
+  semi_major_m: number; semi_minor_m: number; orientation_deg: number;
+  area_ha: number; head_ros_m_min: number;
+  wind_direction_deg: number; wind_speed_kmh: number;
+}
+
+interface Contribution {
+  name: string; value: number; contribution: number; pct: number;
+}
+
+interface RiskDetail {
+  cell_id: number; lat: number; lon: number;
+  ignition_risk: number; spread_risk: number; combined: number;
+  dominant_regime: string; risk_class: string; fwi: number;
+  fbp: { ros_m_min: number; intensity_kw_m: number; flame_length_m: number; fire_type: string };
+  rothermel: { ros_m_min: number; intensity_kw_m: number; flame_length_m: number };
+  local_coefficient: { score: number; ignition_score: number; spread_score: number; n_available_factors: number; n_total_factors: number; renormalized: boolean };
+  contributions: Contribution[];
+  quality: Record<string, boolean | number | string>;
+}
+
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
@@ -62,12 +96,16 @@ export default function Dashboard() {
     lat: number;
     lon: number;
   } | null>(null);
+  const [selectedRiskCell, setSelectedRiskCell] = useState<RiskDetail | null>(null);
+  const [riskMode, setRiskMode] = useState<"combined" | "ignition" | "spread">("combined");
+  const [horizon, setHorizon] = useState(6);
 
   const [layers, setLayers] = useState<LayerToggle[]>([
     { id: "hotspots", label: "Points chauds", icon: Flame, enabled: true, available: false, eta: "PHASE 1 — Backend requis" },
     { id: "weather", label: "Température", icon: Thermometer, enabled: false, available: false, eta: "PHASE 1 — Backend requis" },
     { id: "wind", label: "Vent animé", icon: Wind, enabled: false, available: false, eta: "PHASE 1 — Backend requis" },
-    { id: "risk", label: "Risque", icon: AlertTriangle, enabled: false, available: false, eta: "PHASE 4 — Score final" },
+    { id: "risk", label: "Risque cellulaire", icon: AlertTriangle, enabled: true, available: true, eta: "" },
+    { id: "ellipses", label: "Ellipses propagation", icon: ArrowRightLeft, enabled: true, available: true, eta: "" },
   ]);
 
   const toggleLayer = (id: string) => {
@@ -76,9 +114,68 @@ export default function Dashboard() {
     );
   };
 
+  // Demo risk cells for preview
+  // REPLACED by real API data when backend is connected
+  const demoRiskCells: RiskCellData[] = [
+    { cell_id: 1, lat: 44.85, lon: -0.65, ignition_risk: 35, spread_risk: 72, combined_score: 72, dominant: "spread", risk_class: "élevé" },
+    { cell_id: 2, lat: 44.70, lon: -0.40, ignition_risk: 55, spread_risk: 45, combined_score: 55, dominant: "ignition", risk_class: "modéré" },
+    { cell_id: 3, lat: 45.05, lon: -0.80, ignition_risk: 20, spread_risk: 30, combined_score: 30, dominant: "spread", risk_class: "faible" },
+    { cell_id: 4, lat: 44.40, lon: -0.20, ignition_risk: 70, spread_risk: 85, combined_score: 85, dominant: "spread", risk_class: "très élevé" },
+  ];
+
+  const demoEllipses: EllipseData[] = [1, 3, 6, 12].map((h) => ({
+    horizon_h: h,
+    center_lon: -0.65,
+    center_lat: 44.85,
+    semi_major_m: 300 + h * 200,
+    semi_minor_m: 100 + h * 50,
+    orientation_deg: 225,
+    area_ha: (() => { const a = 300 + h * 200; const b = 100 + h * 50; return Math.round(Math.PI * a * b / 10000); })(),
+    head_ros_m_min: 5 + h * 1.5,
+    wind_direction_deg: 225,
+    wind_speed_kmh: 15 + h * 2,
+  }));
+
+  const riskLayerEnabled = layers.find((l) => l.id === "risk")?.enabled ?? false;
+  const ellipseLayerEnabled = layers.find((l) => l.id === "ellipses")?.enabled ?? false;
+
   const handleMapClick = useCallback((lat: number, lon: number) => {
     setSelectedCell({ lat, lon });
   }, []);
+
+  const handleRiskCellClick = (cell: RiskCellData) => {
+    // Build a full RiskDetail from demo data
+    const detail: RiskDetail = {
+      cell_id: cell.cell_id,
+      lat: cell.lat,
+      lon: cell.lon,
+      ignition_risk: cell.ignition_risk,
+      spread_risk: cell.spread_risk,
+      combined: cell.combined_score,
+      dominant_regime: cell.dominant,
+      risk_class: cell.risk_class,
+      fwi: 15.2,
+      fbp: { ros_m_min: 12.5, intensity_kw_m: 850, flame_length_m: 3.2, fire_type: "intermittent" },
+      rothermel: { ros_m_min: 8.3, intensity_kw_m: 520, flame_length_m: 2.1 },
+      local_coefficient: { score: 0.42, ignition_score: 0.35, spread_score: 0.48, n_available_factors: 12, n_total_factors: 14, renormalized: true },
+      contributions: [
+        { name: "spread.ROS potentielle (FBP)", value: 0.30, contribution: 30, pct: 30 },
+        { name: "ignition.Coefficient local — facteur humain", value: 0.20, contribution: 20, pct: 20 },
+        { name: "spread.FWI normalisé", value: 0.25, contribution: 25, pct: 25 },
+        { name: "spread.Coefficient local — combustible", value: 0.15, contribution: 15, pct: 15 },
+        { name: "ignition.Coefficient local — sécheresse", value: 0.10, contribution: 10, pct: 10 },
+      ],
+      quality: {
+        fwi_available: true,
+        ros_fbp_available: true,
+        ros_rothermel_available: true,
+        ros_dispersion_ratio: 0.34,
+        fuel_confidence: "medium",
+        local_coefficient_available: true,
+      },
+    };
+    setSelectedRiskCell(detail);
+  };
 
   const handleSignOut = async () => {
     await signOut();
@@ -125,12 +222,54 @@ export default function Dashboard() {
         {/* ── Map area ─────────────────────────────────────────── */}
         <main className="relative flex flex-1 flex-col">
           <MapContainer>
-            {/* Layers are injected into the map via children */}
-            {/* When backend is connected, hotspots will be populated from API */}
+            {/* Risk layer */}
+            <RiskLayer
+              map={null as any}
+              cells={demoRiskCells}
+              mode={riskMode}
+              visible={riskLayerEnabled}
+              onCellClick={handleRiskCellClick}
+            />
+            {/* Spread ellipses */}
+            <SpreadEllipseLayer
+              map={null as any}
+              ellipses={demoEllipses.filter((e) => e.horizon_h <= horizon)}
+              visible={ellipseLayerEnabled}
+            />
           </MapContainer>
 
-          {/* Filter bar (collapsible on mobile) */}
-          <div className="absolute left-3 top-3 z-20">
+          {/* Risk mode selector */}
+          <div className="absolute left-3 top-3 z-20 flex gap-1">
+            {(["combined", "ignition", "spread"] as const).map((mode) => (
+              <Button
+                key={mode}
+                variant={riskMode === mode ? "default" : "secondary"}
+                size="sm"
+                className="h-7 bg-background/90 px-2 text-[10px] backdrop-blur-sm"
+                onClick={() => setRiskMode(mode)}
+              >
+                {mode === "combined" ? "Combiné" : mode === "ignition" ? "Départ" : "Propagation"}
+              </Button>
+            ))}
+          </div>
+
+          {/* Horizon selector */}
+          <div className="absolute left-3 top-12 z-20 flex gap-1">
+            {[1, 3, 6, 12].map((h) => (
+              <Button
+                key={h}
+                variant={horizon === h ? "default" : "secondary"}
+                size="sm"
+                className="h-7 bg-background/90 px-2 text-[10px] backdrop-blur-sm"
+                onClick={() => setHorizon(h)}
+              >
+                {h}h
+              </Button>
+            ))}
+          </div>
+
+          {/* Filter bar */}
+          <div className="absolute right-3 top-3 z-20">
             <Button
               variant="secondary"
               size="sm"
