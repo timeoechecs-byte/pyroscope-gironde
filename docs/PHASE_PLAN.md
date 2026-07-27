@@ -257,6 +257,13 @@ relecture des docs n'est pas validée par l'équipe-projet.
 
 ## PHASE 5 — Machine learning (conditionnée)
 
+**Statut (2026-07-27)** : **gate en cours**. [`docs/PHASE5_FEASIBILITY.md`](PHASE5_FEASIBILITY.md)
+rédigé. Inventaire des labels effectué (BDIFF, FIRMS, Sarrau & Yagoub 2025, EFFIS,
+Prométhée, GIP ATGeRi). **Décision** : **PURSUE conditionnel** — option A
+(cellule-jour 1,5 km, FIRMS + Sarrau ∪ EFFIS polygones), sous trois conditions
+bloquantes (cf. FEASIBILITY §8.2). **Aucun code ML tant que l'équipe n'a pas validé
+le gate.**
+
 **Condition d'entrée impérative** (porte bloquante — décision §5 reformulée) :
 
 > La PHASE 5 **ne démarre pas** sans (a) un jeu d'allumages **géolocalisé** à une
