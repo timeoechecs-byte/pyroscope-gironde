@@ -7,6 +7,10 @@ import { defineConfig } from "vite";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), vlyPlugin(), tailwindcss()],
+  define: {
+    // Expose VITE_ env vars as globals (résolu au serve time, pas build time)
+    __VITE_FIRMS_API_KEY__: JSON.stringify(process.env.VITE_FIRMS_API_KEY || ""),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

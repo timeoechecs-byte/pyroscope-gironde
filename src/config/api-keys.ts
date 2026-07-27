@@ -1,46 +1,78 @@
 /**
- * api-keys.ts — Gestion sécurisée des clés API PyroScope 33.
+ * api-keys.ts — Récupération automatique des clés API PyroScope 33.
  *
- * Ordre de lecture :
- *   1. localStorage (persistant, collé une seule fois par l'utilisateur)
- *   2. import.meta.env.VITE_* (injecté par Freebuff Keys UI au build)
+ * Mécanismes de lecture (par ordre de priorité) :
+ *   1. import.meta.env.VITE_*      — Freebuff Keys UI (si serveur démarré après)
+ *   2. __VITE_*__ globaux           — Défini dans vite.config.ts (define)
+ *   3. localStorage                 — Collé manuellement une fois par l'utilisateur
  *
- * Utilisation :
- *   import { FIRMS_API_KEY } from "@/config/api-keys";
- *   if (FIRMS_API_KEY) { ... }
- *
- * La clé n'est JAMAIS affichée dans l'UI, uniquement stockée dans localStorage.
- * Pour effacer : localStorage.removeItem("pyroscope_firms_key")
+ * Le module api-keys.ts lit TOUTES les clés dès l'import.
+ * Les clés non trouvées = undefined → le Dashboard les ignore.
  */
 
-const LS_KEY = "pyroscope_firms_key";
+// ── Types ──────────────────────────────────────────────────────────────
 
-/** Récupère la clé FIRMS depuis localStorage ou import.meta.env */
-export function getFirmsApiKey(): string | undefined {
-  // 1. localStorage (persistant, collé par l'utilisateur)
-  const stored = localStorage.getItem(LS_KEY);
-  if (stored && stored.length > 8) return stored;
+export interface ApiKeys {
+  /** NASA FIRMS — hotspots satellite feux actifs */
+  firms?: string;
+}
 
-  // 2. Variable d'environnement Freebuff (VITE_)
-  const envKey = (import.meta.env as Record<string, string | undefined>).VITE_FIRMS_API_KEY;
-  if (envKey && envKey.length > 8) {
-    // Sauvegarde dans localStorage pour persister
-    localStorage.setItem(LS_KEY, envKey);
-    return envKey;
+// ── Déclaration des globaux Vite define ───────────────────────────────
+declare const __VITE_FIRMS_API_KEY__: string | undefined;
+
+// ── Lecture depuis toutes les sources ──────────────────────────────────
+
+/** Tente de lire une valeur depuis toutes les sources */
+function readKey(
+  envName: string,
+  globalName: string | undefined,
+  lsKey: string,
+): string | undefined {
+  // 1. import.meta.env (Freebuff Keys UI)
+  const envVal = (import.meta.env as Record<string, string | undefined>)[envName];
+  if (envVal && envVal.length > 6) {
+    localStorage.setItem(lsKey, envVal);
+    return envVal;
   }
+
+  // 2. Global define (vite.config.ts)
+  if (globalName) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalVal = (typeof globalThis !== "undefined" ? (globalThis as any)[globalName] : undefined) as string | undefined;
+      if (globalVal && globalVal.length > 6) {
+        localStorage.setItem(lsKey, globalVal);
+        return globalVal;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 3. localStorage (collé par l'utilisateur)
+  const lsVal = localStorage.getItem(lsKey);
+  if (lsVal && lsVal.length > 6) return lsVal;
 
   return undefined;
 }
 
-/** Stocke une clé FIRMS dans localStorage */
-export function setFirmsApiKey(key: string): void {
-  localStorage.setItem(LS_KEY, key);
+// ── Lecture de toutes les clés ────────────────────────────────────────
+
+const firmsKey = readKey("VITE_FIRMS_API_KEY", "__VITE_FIRMS_API_KEY__", "pyroscope_firms_key");
+
+export const API_KEYS: ApiKeys = {
+  firms: firmsKey,
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+export function getFirmsApiKey(): string | undefined {
+  return API_KEYS.firms;
 }
 
-/** Vérifie si une clé FIRMS est disponible */
 export function hasFirmsApiKey(): boolean {
-  return Boolean(getFirmsApiKey());
+  return Boolean(API_KEYS.firms);
 }
 
-/** Clé FIRMS exportée directement */
-export const FIRMS_API_KEY = getFirmsApiKey();
+export function setFirmsApiKey(key: string): void {
+  localStorage.setItem("pyroscope_firms_key", key);
+  (API_KEYS as Record<string, string | undefined>).firms = key;
+}
