@@ -5,7 +5,7 @@
  * Zéro simulation, zéro donnée d'exemple.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/hooks/use-auth";
@@ -14,6 +14,9 @@ import HotspotLayer from "@/components/HotspotLayer";
 import type { HotspotData } from "@/components/HotspotLayer";
 import WindParticlesLayer from "@/components/WindParticlesLayer";
 import IsothermLayer from "@/components/IsothermLayer";
+import FirePerimeterLayer from "@/components/FirePerimeterLayer";
+import type { FirePerimeter } from "@/components/FirePerimeterLayer";
+import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import {
   Flame,
   LogOut,
@@ -21,6 +24,7 @@ import {
   Layers,
   RefreshCw,
   Satellite,
+  Map,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -179,8 +183,17 @@ export default function Dashboard() {
   const avgWind = weather.length ? Math.round(weather.reduce((s, p) => s + p.wind_speed, 0) / weather.length * 10) / 10 : 0;
   const avgHum = weather.length ? Math.round(weather.reduce((s, p) => s + p.humidity, 0) / weather.length) : 0;
 
+  // ── Périmètres feu estimés depuis les hotspots ───────────────────
+  const perimeters = useMemo(
+    () => (hotspots.length >= 3 ? estimateFirePerimeters(hotspots) : []),
+    [hotspots],
+  );
+  const totalBurnedHa = perimeters.reduce((s, p) => s + p.areaHa, 0);
+  const totalBurnedHaBuf = perimeters.reduce((s, p) => s + p.areaHaBuffered, 0);
+  const confirmedFires = perimeters.filter((p) => p.confidence === "confirmé").length;
+
   // ── Couches ───────────────────────────────────────────────────────
-  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true });
+  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true, perimeters: true });
   const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
 
   const windGrid = weather.map((p) => ({
@@ -221,6 +234,8 @@ export default function Dashboard() {
             <IsothermLayer map={null as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
             <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <FirePerimeterLayer map={null as any} perimeters={perimeters} visible={layers.perimeters} />
           </MapContainer>
 
           {/* ── Overlay risque ───────────────────────────────── */}
@@ -262,11 +277,11 @@ export default function Dashboard() {
             <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               <Layers className="h-3 w-3" /> Couches
             </h4>
-            {(["hotspots", "temperature", "wind"] as const).map((k) => (
+            {(["hotspots", "temperature", "wind", "perimeters"] as const).map((k) => (
               <div key={k} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-accent/30">
                 <Switch checked={layers[k]} onCheckedChange={() => toggle(k)} className="h-4 w-7 data-[state=checked]:bg-fire-600" />
                 <span className="text-xs text-muted-foreground">
-                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : "Vent animé"}
+                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : k === "wind" ? "Vent animé" : "Périmètres feux"}
                 </span>
               </div>
             ))}
@@ -305,6 +320,40 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
+
+            {/* Surfaces brûlées estimées */}
+            {perimeters.length > 0 && (
+              <div className="rounded border border-red-900/30 bg-red-950/10 p-2.5">
+                <p className="flex items-center gap-1 text-[10px] font-medium text-red-400">
+                  <Map className="h-3 w-3" /> Zones brûlées estimées
+                </p>
+                <div className="mt-1.5 space-y-1">
+                  <p className="text-[11px] font-semibold text-red-300">
+                    ~{Math.round(totalBurnedHa)} ha{" "}
+                    <span className="text-[9px] font-normal text-red-400/60">
+                      ({Math.round(totalBurnedHaBuf)} ha avec buffer)
+                    </span>
+                  </p>
+                  <p className="text-[9px] text-muted-foreground/60">
+                    {perimeters.length} foyer{perimeters.length > 1 ? "s" : ""} détecté{perimeters.length > 1 ? "s" : ""}
+                    {confirmedFires > 0 && ` · ${confirmedFires} confirmé${confirmedFires > 1 ? "s" : ""}`}
+                  </p>
+                  {perimeters.slice(0, 3).map((p) => (
+                    <div key={p.id} className="flex items-center justify-between border-t border-red-900/20 pt-1 text-[8px] text-muted-foreground/50">
+                      <span>
+                        {p.confidence === "confirmé" ? "🔥" : p.confidence === "probable" ? "⚠️" : "⚪"}{" "}
+                        ~{Math.round(p.areaHa)} ha
+                      </span>
+                      <span>{p.detectionCount} détections · {p.lastDate}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[7px] leading-tight text-muted-foreground/30">
+                  ⚠️ Estimation conservative par clustering VIIRS. Ne reflète pas la surface brûlée réelle.
+                  Cliquez sur un polygone pour le détail. Sources : NASA FIRMS.
+                </p>
+              </div>
+            )}
 
             {/* Météo */}
             <div className="rounded border border-border/40 p-2.5">
