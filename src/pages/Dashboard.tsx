@@ -17,6 +17,7 @@ import IsothermLayer from "@/components/IsothermLayer";
 import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
+import { getFirmsApiKey, setFirmsApiKey } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -25,6 +26,7 @@ import {
   RefreshCw,
   Satellite,
   Map,
+  KeyRound,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -148,15 +150,21 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   // ── Configuration des clés API ────────────────────────────────────
-  // Clé FIRMS injectée via Freebuff Keys UI (variable VITE_FIRMS_API_KEY)
-  // Ou via fichier .env.local à la racine du projet.
-  // Sans clé : hotspots et périmètres désactivés, message dans la sidebar.
-  const firmsKey = (import.meta.env as Record<string, string | undefined>).VITE_FIRMS_API_KEY;
+  // La clé FIRMS est stockée et récupérée via le module api-keys.ts :
+  //   - localStorage du navigateur (persistant, collé UNE SEULE fois)
+  //   - Fallback : variable d'environnement VITE_FIRMS_API_KEY
+  const [firmsKey, setFirmsKey] = useState<string | undefined>(getFirmsApiKey);
+  const [firmsInput, setFirmsInput] = useState("");
   const firmsConfigured = Boolean(firmsKey);
 
-  // Diagnostic : voir dans la console F12 ce qui est dispo
-  console.log("[PyroScope] VITE_FIRMS_API_KEY =", firmsKey ? "✓ présente (" + firmsKey.substring(0, 4) + "...)" : "✗ absente");
-  console.log("[PyroScope] VITE_ vars:", Object.keys(import.meta.env as object).filter(k => k.startsWith("VITE_")));
+  /** Colle la clé → localStorage → recharge les données */
+  const handleSaveKey = useCallback(() => {
+    const trimmed = firmsInput.trim();
+    if (trimmed.length < 10) return;
+    setFirmsApiKey(trimmed);
+    setFirmsKey(trimmed);
+    setFirmsInput("");
+  }, [firmsInput]);
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
@@ -352,12 +360,43 @@ export default function Dashboard() {
                 <Satellite className="h-3 w-3 text-fire-500" /> NASA FIRMS
               </p>
               {!firmsConfigured ? (
-                <p className="text-[9px] text-yellow-600/70">
-                  ⚠️ Clé API manquante — définissez <code className="text-[8px]">VITE_FIRMS_API_KEY</code>
-                  dans l'interface Keys de Freebuff.
-                </p>
+                <>
+                  <p className="mb-1.5 text-[9px] text-yellow-600/70">
+                    🔑 Colle ta clé FIRMS une seule fois ci-dessous :
+                  </p>
+                  <div className="flex gap-1">
+                    <input
+                      type="password"
+                      value={firmsInput}
+                      onChange={(e) => setFirmsInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
+                      placeholder="Clé NASA FIRMS…"
+                      className="flex-1 rounded border border-border/40 bg-background px-2 py-1 text-[10px] font-mono"
+                    />
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="h-7 text-[10px]"
+                      onClick={handleSaveKey}
+                      disabled={firmsInput.trim().length < 10}
+                    >
+                      OK
+                    </Button>
+                  </div>
+                  <a
+                    href="https://firms.modaps.eosdis.nasa.gov"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 block text-[8px] text-blue-500 underline"
+                  >
+                    Obtenir une clé gratuite →
+                  </a>
+                </>
               ) : (
                 <>
+                  <p className="flex items-center gap-1 text-[9px] text-green-600/70">
+                    <KeyRound className="h-2.5 w-2.5" /> Clé configurée ✓
+                  </p>
                   <p className="text-[10px] text-muted-foreground/60">
                     {hotspotsOk
                       ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite`
