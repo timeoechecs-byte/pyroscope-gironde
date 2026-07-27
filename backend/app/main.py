@@ -15,7 +15,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.routers import fwi, hotspots, weather
+from app.routers import fwi, hotspots, vegetation, weather
 from app.settings import BBOX_CALCUL, BBOX_DEPARTEMENT, BBOX_INGESTION, settings
 
 # ── Structured logging ──────────────────────────────────────────────────
@@ -127,6 +127,7 @@ async def metrics():
 app.include_router(hotspots.router)
 app.include_router(weather.router)
 app.include_router(fwi.router)
+app.include_router(vegetation.router)
 
 
 # ── Endpoint: source configuration (BBOX) ──────────────────────────────
