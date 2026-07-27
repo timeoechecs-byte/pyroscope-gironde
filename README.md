@@ -5,8 +5,11 @@
 Application web **open source** de suivi et d'évaluation du **risque d'incendie de forêt**
 sur le département de la **Gironde** (France).
 
-**Statut :** PHASE 1 — spécifications & ossature uniquement. Aucune donnée d'incendie n'est
-ingérée à ce stade. Voir [`docs/PHASE_PLAN.md`](docs/PHASE_PLAN.md).
+**Statut :** Phase Pré-0 + PHASE 0 livrées (spec, doc, CI, mode dégradé doc-only).
+PHASE 1 → PHASE 5 spécifiées (connecteurs, CFFWIS, FBP + Rothermel, coefficient Gironde,
+ML conditionnée avec gate validé sur données). PHASE 6 + PHASE 7 spécifiées (mise en
+production, pérennité). **La feuille de route s'arrête à PHASE 7 — il n'y a pas de
+phase 8.** Tout ce qui suit relève du backlog : [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ---
 
@@ -70,7 +73,9 @@ toute valeur inventée oumockée pour combler un trou.
 | **PHASE 3** | Végétation & terrain : BD Forêt V2, RGE ALTI, CORINE, NDVI/NDMI Sentinel-2 | Planifiée |
 | **PHASE 4** | Propagation Rothermel + coefficient Gironde (YAML) + score 0-100 + mode simulation | Planifiée |
 | **PHASE 5** | ML **conditionnée** : jeu d'allumages géolocalisé + validation temporelle par blocs battant le baseline FWI | **Conditionnée** |
-| **PHASE 6** | Optionnel : PWA + notifications (avec garde-fou), exports GeoJSON/CSV, API publique. **Webcams + ML : hors périmètre v1.** | Planifiée |
+| **PHASE 6** | Mise en production, diffusion et résilience. Performance (MVT, Redis, Brotli), observabilité étendue, alerting technique distinct des notifications utilisateur, surveillance de zone avec avertissement de non-garantie, PWA + hors-ligne avec âge visible, API publique versionnée, accessibilité WCAG AA, mode crise activable manuellement, posture réglementaire (différenciation explicite de la vigilance officielle). | Planifiée |
+| **PHASE 7** | Pérennité, ouverture et extension. `METHODOLOGY.md` + `LIMITATIONS.md`, notebooks de reproduction, ouverture du code (licence consciente), revue externe à 3 regards (scientifique INRAE, opérationnel SDIS 33/DFCI, technique), extension géographique 33 → 33+40+47 conditionnée à un socle solide, plan de continuité, décision tranchée **personnel / avec utilisateurs**. | Planifiée |
+| **Clôture** | **La feuille de route s'arrête à PHASE 7. Pas de phase 8.** Tout ce qui suit est dans [`docs/BACKLOG.md`](docs/BACKLOG.md), avec critères d'arbitrage stricts et tableau permanent des éléments volontairement retirés. | **Scellée** |
 
 ## Documentation
 

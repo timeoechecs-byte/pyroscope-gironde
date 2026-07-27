@@ -308,28 +308,300 @@ Baseline :
 
 ---
 
-## PHASE 6 — Optionnel
+## PHASE 6 — Mise en production, diffusion et résilience
 
-**Périmètre minimal** (objets utiles, à arbitrer au cas par cas) :
+**Statut** : phase définie. Code à écrire après PHASE 0–5 validées (et PHASE 5
+soit close, soit documentée par `docs/PHASE5_OUTCOME.md`).
 
-- **Alertes par cellule surveillée** : opt-out, valeur de score ≥ seuil configurable
-  par l'utilisateur.
-- **PWA + notifications push** : **avec garde-fou explicite** :
-  - « Notifications **informatives**, sans garantie de délivrance — pour l'alerte,
-    18 / 112 et les canaux officiels ».
-  - iOS : web push fonctionnel uniquement pour PWA installée sur l'écran d'accueil ;
-    couverture Apple limitée documentée.
-  - **Repli** : email ou flux RSS explicitement proposés en plus du push, jamais
-    comme alternative *« silencieuse »*.
-- **Export GeoJSON / CSV** des couches affichées.
-- **API publique documentée** (OpenAPI 3.1 publique, OAuth ou clé d'API limitée).
-- **Vision par ordinateur (YOLO / RT-DETR) sur webcams publiques** :
-  **HORS PÉRIMÈTRE v1**. Trois blocages rédhibitoires : droits sur le flux,
-    RGPD (personnes identifiables sur des webcams publiques), précision de détection
-    faible → surtout des faux positifs. **Ne sera réintroduit que sur cas d'usage
-    précis et validation juridique explicite.**
+**Objectif** : rendre l'application utilisable par d'autres, de façon fiable,
+**y compris le jour où elle compte** — c'est-à-dire précisément le jour où un
+grand feu se déclare et où tout le monde s'y connecte en même temps.
 
-**Critères d'entrée** : PHASES 0 à 4 (et condition PHASE 5 si retenue) terminées.
+### 6.1 Performance et mise en cache
+
+- **Vector tiles (MVT)** pré-générées pour toutes les couches de grille, servies
+  depuis un cache. Le GeoJSON à la volée sur 160 000 cellules ne tient pas la charge.
+- Cache Redis par couche et par horizon, **invalidation pilotée par le pipeline
+  d'ingestion**, pas par un TTL aveugle.
+- Compression **Brotli**, en-têtes `Cache-Control` corrects, ETag sur les
+  endpoints stables.
+- **Budget de performance mesuré et tenu** : premier rendu utile < 2 s sur 4G
+  moyenne ; interaction carte fluide sur téléphone de milieu de gamme d'il y a
+  quatre ans. **Test sur vrai appareil modeste, pas sur le poste de développement.**
+- **Test de charge** (`k6` ou `locust`) à **50× le trafic nominal**. Documenter
+  le point de rupture, ne pas se contenter de « ça tient ».
+
+### 6.2 Observabilité
+
+Reprendre le noyau Prometheus déjà arrêté et compléter par :
+
+- `data_age_seconds{source}`, `ingestion_total{source,status}`,
+  `external_api_duration_seconds{source}`, `external_api_quota_used/limit{source}`,
+  `fwi_recursion_gap_days{source}`, `grid_coverage_ratio{layer}` ;
+- latence des endpoints par **quantile**, taux 5xx, occupation disque et base,
+  âge du dernier calcul de risque.
+
+**Alerting technique** (Alertmanager ou équivalent) : source silencieuse au-delà
+de son délai attendu ; trou dans la récursion FWI ; quota externe > 80 % ;
+disque > 85 %.
+
+**Ces alertes sont pour l'exploitant. Elles n'ont rien à voir avec les alertes
+utilisateur du §6.3.** Ne jamais mélanger les deux canaux.
+
+### 6.3 Surveillance de zone par l'utilisateur
+
+Un utilisateur enregistre une ou plusieurs zones et reçoit une notification
+quand le niveau de danger y franchit un seuil.
+
+**Contraintes non négociables** (déjà arbitrées) :
+
+- **Jamais présentée comme un canal d'alerte de sécurité.** Formulation UI :
+  *« notifications informatives, sans garantie de délivrance — pour l'alerte,
+  18 / 112 et les canaux officiels »*.
+- **Repli e-mail ou flux RSS** obligatoire (push web inégalement fiable, en
+  particulier iOS qui exige une PWA installée sur l'écran d'accueil).
+- **Anti-rebond** : pas de notification répétée pour un même franchissement,
+  fenêtre de silence configurable.
+- **Données personnelles réduites au strict minimum** : zone géographique +
+  point de contact. Pas de compte si un jeton anonyme suffit.
+- Politique de confidentialité rédigée ; purge automatique des inactifs.
+
+### 6.4 PWA
+
+Manifeste, service worker, installation sur écran d'accueil, **mode hors-ligne
+affichant la dernière donnée reçue avec son âge bien visible**. Une carte
+hors-ligne qui n'affiche pas clairement qu'elle est périmée est pire qu'un
+écran d'erreur.
+
+### 6.5 Export et API publique
+
+- Export **GeoJSON**, **CSV**, **GeoPackage** par couche et par emprise.
+- API publique documentée en **OpenAPI 3.1**, **limitation de débit**,
+  **versionnement** (`/api/v1/`), **politique de dépréciation écrite**.
+- **Attribution obligatoire** dans la doc et dans chaque export : NASA FIRMS,
+  Copernicus, Open-Meteo (CC BY 4.0), IGN, contributeurs OpenStreetMap (ODbL).
+- ⚠️ **Vérifier la compatibilité des licences avant toute rediffusion.** Tu peux
+  publier tes propres calculs dérivés ; tu ne peux pas nécessairement
+  rediffuser les données sources telles quelles, et les conditions non
+  commerciales d'Open-Meteo se propagent. → `docs/LICENSING.md` à rédiger.
+
+### 6.6 Accessibilité et ergonomie
+
+- Contrastes **WCAG AA**, palettes lisibles en cas de daltonisme, valeurs
+  numériques **toujours disponibles en complément de la couleur**.
+- Navigation clavier complète, **libellés ARIA** sur les contrôles de carte.
+- **Ne dépends jamais de la seule couleur** pour transmettre un niveau de
+  danger — exigence à la fois d'accessibilité et de sécurité de l'information.
+- Interface utilisable **en extérieur, en plein soleil** : contrastes élevés,
+  cibles tactiles larges.
+
+### 6.7 Hébergement, sauvegarde, coûts
+
+- Déploiement reproductible : `docker compose` en production ou build d'images
+  en CI. **Secrets injectés par l'environnement, jamais dans l'image**.
+- Sauvegarde quotidienne PostgreSQL, **avec restauration testée**. Une
+  sauvegarde non testée n'est pas une sauvegarde.
+- Certificat TLS, reverse proxy, `fail2ban` ou équivalent.
+- `docs/RUNBOOK.md` : procédure pas-à-pas pour source qui tombe, base qui
+  sature, déploiement qui échoue.
+- **Chiffre le coût réel** — VPS, stockage Sentinel, bande passante — et
+  écris-le dans `docs/COSTS.md`. Un projet « gratuit » qui coûte 40 €/mois
+  d'hébergement doit le savoir avant, pas après.
+
+### 6.8 Mode crise — point le plus important de la phase
+
+Le jour où un grand feu se déclare en Gironde, trois choses arrivent
+simultanément : le trafic explose, les gens cherchent de l'information vitale,
+et ton outil est le moins bien placé pour la leur donner.
+
+**Mode crise activable manuellement** :
+
+- **bandeau prioritaire** en haut de page renvoyant vers préfecture, SDIS 33,
+  consignes officielles — **au-dessus** de toute donnée ;
+- désactivation des fonctions coûteuses (simulation, animations longues) ;
+- basculement possible vers une **page statique légère** si l'infra sature ;
+- limitation de débit renforcée.
+
+**Règle éditoriale permanente** : **ton outil ne commente jamais un incendie
+en cours.** Il affiche des détections satellite horodatées, avec leur âge et
+leurs limites. Il ne dit pas où va le feu, ne nomme pas de communes menacées,
+ne relaie pas d'information non officielle. C'est la ligne qui sépare un outil
+de visualisation d'une source d'information de crise — tu n'as ni le mandat,
+ni les moyens de vérification, ni la responsabilité juridique de la seconde.
+
+### 6.9 Posture réglementaire et institutionnelle
+
+Publier une carte de risque incendie en France, dans un domaine où
+**Météo-France diffuse déjà une information officielle** (Météo des Forêts) et
+où la Sécurité civile est seule compétente pour l'alerte, demande une position
+claire.
+
+- **Différencier explicitement** ton indice de la vigilance officielle. Termes
+  différents, échelle différente, mention permanente que la référence est
+  Météo-France et la préfecture.
+- **Ne jamais reprendre les codes couleur ni le vocabulaire de la vigilance
+  officielle** — la confusion serait le vrai risque juridique et humain.
+- Mentions légales complètes : éditeur, hébergeur, contact, absence de
+  garantie, finalité pédagogique et informative.
+- Conformité RGPD si collecte de contacts pour notifications.
+- Procédure de retrait : que faire si la préfecture ou le SDIS te demande de
+  modifier ou retirer quelque chose. Écris-la **à froid, pas dans l'urgence**.
+
+**Fortement recommandé, non technique** : **contacte, avant toute diffusion
+large**, le SDIS 33, la DFCI Aquitaine ou l'observatoire régional. Présente
+l'outil, ses limites, ta démarche. C'est probablement l'action au meilleur
+rapport valeur/effort de tout le projet.
+
+### Critères d'acceptation — phase 6
+
+- [ ] budget de performance mesuré et tenu sur appareil modeste réel ;
+- [ ] test de charge à 50× le trafic nominal, point de rupture documenté ;
+- [ ] alerting technique opérationnel, distinct des notifications utilisateur ;
+- [ ] notifications utilisateur avec avertissement de non-garantie et repli ;
+- [ ] PWA installable, hors-ligne affichant l'âge de la donnée ;
+- [ ] API publique versionnée, documentée, limitée en débit ;
+- [ ] `docs/LICENSING.md` clarifiant les droits de republication source par source ;
+- [ ] accessibilité WCAG AA vérifiée par outil et à la main ;
+- [ ] sauvegarde testée par une restauration réelle ;
+- [ ] `docs/RUNBOOK.md` rédigé ;
+- [ ] mode crise implémenté et testé ;
+- [ ] mentions légales, RGPD, procédure de retrait en place.
+
+---
+
+## PHASE 7 — Pérennité, ouverture et extension
+
+**Statut** : phase définie. Code à écrire après PHASE 6 validée.
+
+**Objectif** : faire en sorte que le travail **survive à ta disponibilité**, et
+qu'il soit **vérifiable par quelqu'un d'autre**. C'est la phase la moins
+gratifiante et la plus déterminante pour la valeur à long terme.
+
+### 7.1 Documentation scientifique et reproductibilité
+
+- [`docs/METHODOLOGY.md`](METHODOLOGY.md) : la chaîne complète, de la donnée
+  brute au score affiché, avec équations, sources, **liste explicite des
+  hypothèses non validées** — table de correspondance des combustibles,
+  relation NDMI → humidité du combustible vivant, poids du coefficient local.
+- [`docs/LIMITATIONS.md`](LIMITATIONS.md) : ce que l'outil ne sait pas faire.
+  Millésime BD Forêt, domaine de validité du modèle de propagation, absence
+  de sautes de feu, absence de prise en compte des secours, latence des sources.
+- **Notebooks de reproduction** pour chaque résultat clé (validation du
+  CFFWIS, rétro-analyse 2022).
+- Versionnement des données de référence et des configurations : on doit
+  pouvoir reproduire à l'identique une carte produite six mois plus tôt.
+
+### 7.2 Ouverture du code
+
+- Choix de licence **conscient**. Permissive (MIT, Apache 2.0) maximise la
+  réutilisation ; copyleft (AGPL) garantit que les améliorations restent
+  ouvertes. **Cohérence** : l'usage non commercial d'Open-Meteo et les
+  conditions de certaines sources contraignent ce que des tiers pourront
+  faire de ton travail — dis-le dans le README.
+- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, modèles d'issue.
+- CI publique, **badges de couverture de tests honnêtes**.
+- Versionnement sémantique, `CHANGELOG.md`.
+
+### 7.3 Revue externe
+
+Le projet a atteint un point où ton propre jugement ne suffit plus à le valider.
+
+- Regard **scientifique** sur le moteur de risque : INRAE, laboratoires
+  travaillant sur le comportement du feu, universitaires en géomatique.
+- Regard **opérationnel** sur l'utilité et les risques de mauvaise
+  interprétation : SDIS 33, DFCI.
+- Regard **technique** sur le code, via l'ouverture du dépôt.
+
+Intègre les retours dans [`docs/REVIEWS.md`](REVIEWS.md), y compris les
+critiques que tu n'as pas suivies, avec la raison.
+
+### 7.4 Extension géographique — si et seulement si le socle est solide
+
+Le massif des Landes de Gascogne déborde largement la Gironde : les Landes
+et le Lot-et-Garonne en font partie, et un feu ne s'arrête pas à une limite
+départementale.
+
+**Conditions préalables** :
+
+- toutes les emprises et grilles **déjà paramétrables**, aucune constante
+  géographique en dur ;
+- coût en calcul et en stockage **mesuré** avant d'étendre ;
+- la BD Forêt, le RGE ALTI et les données OSM sont départementaux : le
+  pipeline d'ingestion doit **itérer sur une liste de départements**.
+
+Extension naturelle et cohérente : **le massif landais entier** (33, 40, 47).
+Au-delà, tu perds l'avantage qui fait la valeur du projet — la connaissance
+fine d'un territoire spécifique — et tu deviens un EFFIS moins bon.
+
+### 7.5 Plan de continuité
+
+- Que se passe-t-il si tu arrêtes pendant six mois ? Le pipeline s'arrête-t-il
+  proprement ou accumule-t-il silencieusement des données fausses ?
+  **Implémente un arrêt propre** : au-delà d'un seuil de retard, l'application
+  bascule en mode dégradé explicite plutôt que d'afficher des indices calculés
+  sur des trous.
+- Bandeau automatique « données non mises à jour depuis X jours » au-delà
+  d'un seuil.
+- Procédure de passation documentée, secrets confiés à au moins une autre
+  personne si le projet a des utilisateurs.
+- **Décision assumée et écrite** : le projet est-il un exercice personnel,
+  ou prend-il des utilisateurs en charge ? Les deux sont des réponses valables
+  — mais elles n'imposent pas les mêmes devoirs, et **ne pas trancher revient
+  à choisir la seconde sans en assumer les obligations**.
+
+### Critères d'acceptation — phase 7
+
+- [ ] `METHODOLOGY.md` et `LIMITATIONS.md` rédigés, hypothèses non validées listées ;
+- [ ] notebooks de reproduction fonctionnels ;
+- [ ] licence choisie, contraintes de réutilisation documentées ;
+- [ ] dépôt ouvert avec CI publique ;
+- [ ] au moins un retour externe sollicité et consigné ;
+- [ ] arrêt propre en cas d'interruption prolongée, testé ;
+- [ ] statut du projet (personnel ou avec utilisateurs) explicitement tranché
+      et écrit.
+
+---
+
+## Clôture de la feuille de route
+
+> **La feuille de route s'arrête à la phase 7. Il n'y a pas de phase 8, et il
+> n'y en aura pas.**
+>
+> Un projet personnel meurt rarement d'un manque d'idées — il meurt d'une liste
+> de phases qui s'allonge plus vite qu'elle ne se vide. Tout ce qui viendra
+> après la phase 7 relève d'un **backlog**, où les choses attendent qu'un besoin
+> réel les réclame, pas d'un plan qui donne l'illusion d'un travail déjà cadré.
+
+### Éléments en backlog (post-phase 7)
+
+| Élément | Pourquoi pas une phase ? |
+| --- | --- |
+| Indices complémentaires (McArthur australien, indices méditerranéens) | Utiles seulement en comparaison, pas en production. |
+| Assimilation d'observations locales (stations amateur, capteurs) | À déclencher sur demande d'un acteur opérationnel qualifié. |
+| Modélisation de la dispersion des fumées (données CAMS) | Valeur ajoutée forte en cas de pollution aiguë, mais hors périmètre pédagogique actuel. |
+| Couches IGN accessibilité forestière + dessertes DFCI | Probablement le meilleur candidat du lot ; à activer sur demande du SDIS 33 ou d'un utilisateur identifié. |
+| Historique long des incendies au-delà de ce que la PHASE 5 aura permis | Dépend des résultats PHASE 5 et de partenariats à venir (BDIFF détaillé, SDIS 33). |
+
+Catalogue complet et arbitrage : [`docs/BACKLOG.md`](BACKLOG.md).
+
+### Éléments volontairement retirés — rappel permanent
+
+> Un projet se définit autant par ce qu'il refuse de faire que par ce qu'il
+> livre. Ce tableau doit rester affiché en permanence. Quand l'envie reviendra
+> de rouvrir l'un de ces points, ce sera après avoir réfuté la raison de son
+> retrait.
+
+| Élément | Raison du retrait |
+| --- | --- |
+| **Webcams publiques + vision par ordinateur** | droits sur les flux, RGPD (personnes identifiables), précision de détection faible, rapport valeur/coût défavorable |
+| **Blitzortung** (foudre) | pas d'API publique ouverte, conditions restrictives ; les variables orageuses d'Open-Meteo couvrent le besoin |
+| **LLM dans le calcul du risque** | aucun rôle légitime ; usage limité à la reformulation optionnelle de résultats déjà calculés |
+| **Rafraîchissement toutes les 5 minutes** (FIRMS) | les satellites polaires passent 4 à 8 fois par jour ; cadence sans objet et pénalisante vis-à-vis des APIs |
+| **Grille FWI à 250 m** | fausse précision : le FWI dérive de variables météo à résolution kilométrique |
+| **Probabilité affichée en pourcentage** | non calibrable sur les données disponibles, non récupérable dans un cadrage cas-témoins |
+| **Horizons au-delà de 48 h** | au-delà, la résolution de la prévision ne soutient plus le calcul |
+
+Catalogue détaillé : [`docs/BACKLOG.md`](BACKLOG.md) §3.
 
 ---
 
@@ -337,7 +609,7 @@ Baseline :
 
 | Sujet | Statut | Décision attendue |
 | --- | --- | --- |
-| Licence définitive | AGPL-3.0 proposé | Avant finalisation du `LICENSE` |
-| Authentification | Pas requise pour consultation ; admin/rapportage à concevoir | Avant PHASE 6 admin |
-| Cams vidéo publiques + ML | **Hors périmètre v1** | Réintroduction sur cas d'usage précis |
-| Communication vers grand public | Notification PWA + RSS + email | Avant PHASE 6 |
+| Licence définitive | AGPL-3.0 proposé | À trancher avant finalisation du `LICENSE` (cf. PHASE 7 §7.2) |
+| Authentification | Pas requise pour consultation ; admin/rapportage à concevoir | Avant toute fonction admin (PHASE 7 ou après) |
+| Cams vidéo publiques + ML | **Hors périmètre v1** (cf. Clôture ci-dessus) | Réintroduction sur cas d'usage précis |
+| Communication vers grand public | Notification PWA + RSS + email (cf. PHASE 6 §6.3) | PHASE 6 §6.3 |
