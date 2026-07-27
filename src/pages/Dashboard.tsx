@@ -147,14 +147,16 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
+  // ── Configuration depuis variables d'environnement ────────────────
+  // Clé FIRMS injectée via l'interface Freebuff (Keys/API keys).
+  // Variable : VITE_FIRMS_API_KEY (obtenir sur firms.modaps.eosdis.nasa.gov)
+  const firmsKey = import.meta.env.VITE_FIRMS_API_KEY as string | undefined;
+  const firmsConfigured = Boolean(firmsKey);
+
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
-  const [firmsKey, setFirmsKey] = useState(
-    () => localStorage.getItem("pyroscope_firms_key") ?? "",
-  );
-  const [firmsInput, setFirmsInput] = useState(firmsKey);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -164,17 +166,50 @@ export default function Dashboard() {
     try {
       const [w, h] = await Promise.all([
         fetchWeather(),
-        firmsKey ? fetchFirms(firmsKey).catch(() => []) : Promise.resolve([]),
+        firmsConfigured && firmsKey
+          ? fetchFirms(firmsKey).catch(() => {
+              setError("FIRMS : erreur de récupération — clé invalide ?");
+              return [];
+            })
+          : Promise.resolve([]),
       ]);
       setWeather(w);
       setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
-      if (h.length) setHotspots(h);
+      if (h.length > 0) setHotspots(h);
       if (!w.length) setError("Météo : aucun point de grille disponible");
-    } catch { setError("Erreur de chargement des données"); }
-    finally { setLoading(false); }
-  }, [firmsKey]);
+      if (!firmsConfigured) setError((prev) => (prev ? prev + " · " : "") + "Clé FIRMS manquante — hotspots désactivés");
+    } catch {
+      setError("Erreur de chargement des données");
+    } finally {
+      setLoading(false);
+    }
+  }, [firmsKey, firmsConfigured]);
 
-  useEffect(() => { load(); }, [load]);
+  // Chargement initial + rafraîchissement automatique
+  useEffect(() => {
+    load();
+    // Météo : rafraîchir toutes les 5 minutes
+    const weatherInterval = setInterval(() => {
+      fetchWeather().then((w) => {
+        if (w.length) {
+          setWeather(w);
+          setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
+        }
+      });
+    }, 5 * 60 * 1000);
+    // FIRMS : rafraîchir toutes les 15 minutes
+    const firmsInterval = setInterval(() => {
+      if (firmsConfigured && firmsKey) {
+        fetchFirms(firmsKey).then((h) => {
+          if (h.length > 0) setHotspots(h);
+        });
+      }
+    }, 15 * 60 * 1000);
+    return () => {
+      clearInterval(weatherInterval);
+      clearInterval(firmsInterval);
+    };
+  }, [load, firmsConfigured, firmsKey]);
 
   // ── Risque calculé ────────────────────────────────────────────────
   const riskScore = calcFireRisk(weather);
@@ -306,18 +341,29 @@ export default function Dashboard() {
               </p>
             </div>
 
-            {/* Hotspots */}
+            {/* Hotspots FIRMS */}
             <div className="rounded border border-border/40 p-2.5">
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
                 <Satellite className="h-3 w-3 text-fire-500" /> NASA FIRMS
               </p>
-              <p className="text-[10px] text-muted-foreground/60">
-                {hotspotsOk ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite` : "Aucune détection"}
-              </p>
-              {hotspotsOk && (
-                <div className="mt-1 text-[9px] text-muted-foreground/40">
-                  FRP max : {Math.max(...hotspots.map((h) => h.frp)).toFixed(1)} MW · Dernier : {hotspots[0].acq_date}
-                </div>
+              {!firmsConfigured ? (
+                <p className="text-[9px] text-yellow-600/70">
+                  ⚠️ Clé API manquante — définissez <code className="text-[8px]">VITE_FIRMS_API_KEY</code>
+                  dans l'interface Keys de Freebuff.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    {hotspotsOk
+                      ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite`
+                      : "Aucune détection active"}
+                  </p>
+                  {hotspotsOk && (
+                    <div className="mt-1 text-[9px] text-muted-foreground/40">
+                      FRP max : {Math.max(...hotspots.map((h) => h.frp)).toFixed(1)} MW · Dernier : {hotspots[0].acq_date}
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
@@ -371,21 +417,6 @@ export default function Dashboard() {
 
             {/* Erreur */}
             {error && <p className="text-[10px] text-red-500">{error}</p>}
-
-            {/* Clé FIRMS */}
-            <div className="rounded border border-border/40 p-2.5">
-              <p className="text-[10px] font-medium text-muted-foreground mb-1">🔑 Clé NASA FIRMS</p>
-              <div className="flex gap-1">
-                <input type="text" value={firmsInput} onChange={(e) => setFirmsInput(e.target.value)}
-                  placeholder="Clé API…" className="flex-1 rounded border border-border/40 bg-background px-2 py-1 text-[10px]" />
-                <Button variant="default" size="sm" className="h-7 text-[10px]"
-                  onClick={() => { setFirmsKey(firmsInput); localStorage.setItem("pyroscope_firms_key", firmsInput); }}>
-                  OK
-                </Button>
-              </div>
-              <a href="https://firms.modaps.eosdis.nasa.gov" target="_blank" rel="noopener noreferrer"
-                className="mt-1 block text-[9px] text-blue-500 underline">Obtenir une clé gratuite</a>
-            </div>
 
             {/* Légende */}
             <hr className="border-border/40" />

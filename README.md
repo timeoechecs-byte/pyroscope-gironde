@@ -47,7 +47,26 @@ affichage incohérent). Trois bboxes distinctes sont imposées :
 | Déploiement | Docker · docker compose |
 
 **Interdits** : Mapbox, Google Maps, toute clé de carte payante, toute API LLM propriétaire,
-toute valeur inventée oumockée pour combler un trou.
+toute valeur inventée ou mockée pour combler un trou.
+
+## Configuration rapide — Clés API
+
+Le Dashboard charge automatiquement les données au démarrage. Une seule clé est nécessaire :
+
+| Variable | Service | Où l'obtenir |
+|----------|---------|-------------|
+| `VITE_FIRMS_API_KEY` | NASA FIRMS (hotspots satellite) | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov) — compte gratuit |
+
+> **Open-Meteo** (météo, température, vent) fonctionne **sans clé**.
+
+### Comment configurer (Freebuff)
+
+1. Va dans l'onglet **Keys / API keys** de ton projet Freebuff
+2. Ajoute la variable `VITE_FIRMS_API_KEY` avec ta clé FIRMS
+3. Recharge la page — les hotspots satellite apparaissent automatiquement
+
+> Les données se rafraîchissent en temps réel : météo toutes les 5 min, FIRMS toutes les 15 min.
+> Aucune interaction manuelle nécessaire après configuration.
 
 ## Trois modes d'exécution
 
