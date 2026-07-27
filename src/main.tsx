@@ -9,6 +9,9 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "./index.css";
 
+// Components
+import LegalBanner from "@/components/LegalBanner";
+
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
@@ -111,6 +114,8 @@ function RouteSyncer() {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <RootErrorBoundary>
+      {/* LegalBanner — monté à la racine, au-dessus du routeur, présent sur toutes les routes (SPEC §3) */}
+      <LegalBanner />
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
