@@ -1,0 +1,506 @@
+# ============================================================================
+# config/local_coefficient.yaml
+# ----------------------------------------------------------------------------
+# Coefficient de danger local pour la Gironde (PHASE 4).
+# Source normatrice : docs/RISK_SCORE.md, docs/SPEC.md §6.3.
+# Edition : valeurs d'expert, **aucun poids auto-appris** tant que PHASE 5
+# (ML calibree) n'a pas livre un dataset d'allumages geolocalises validant
+# la reformulation des poids.
+# ============================================================================
+
+version: "1.0.0"
+phase: 4
+scope: "B"  # FBP primaire + Rothermel secondaire.
+last_updated: "2026-07-27"
+
+# ----------------------------------------------------------------------------
+# Conventions globales (NE PAS MODIFIER SANS RE-VALIDATION)
+# ----------------------------------------------------------------------------
+normalization_default: linear_piecewise   # lineaire par morceaux, voir chaque facteur.
+aggregate_method: weighted_sum_with_renormalization   # moyenne ponderee + renormalisation auto.
+missing_factor_policy: exclude_and_renormalize   # JAMAIS de defaut implicite (cf. SPEC §C-05.c).
+display_precision: 2   # arrondi a 2 decimales pour les contributions.
+no_default_for_missing: true   # facteur absent -> facteur exclu + somme renormalisee.
+no_confidence_percent_in_output: true   # cf. SPEC §6.4 reformule (Decision §8 du journal).
+
+# ----------------------------------------------------------------------------
+# Classes de danger (seuils EFFIS, editables)
+# ----------------------------------------------------------------------------
+danger_classes_effis:
+  very_low:      { fwi_max:  5.2, label: "tres faible" }
+  low:           { fwi_min:  5.2, fwi_max: 11.2, label: "faible" }
+  moderate:      { fwi_min: 11.2, fwi_max: 21.3, label: "modere" }
+  high:          { fwi_min: 21.3, fwi_max: 38.0, label: "eleve" }
+  very_high:     { fwi_min: 38.0, fwi_max: 50.0, label: "tres eleve" }
+  extreme:       { fwi_min: 50.0,               label: "extreme" }
+
+# ----------------------------------------------------------------------------
+# Classes d'horizons
+# ----------------------------------------------------------------------------
+horizons_h: [0, 3, 6, 12, 24, 48]   # J+0 a J+48h ; pas de J+7j (cf. RISK_SCORE §8).
+
+# ----------------------------------------------------------------------------
+# FACTEURS — 14 facteurs en 4 categories
+# ----------------------------------------------------------------------------
+# Cote de chaque facteur :
+#   id           : cle YAML canonique (utilisee par les tests).
+#   label        : nom affiche (UI).
+#   source       : origine de la donnee (open_meteo, firms, bdforet_v2, sentinel2_l2a, ...).
+#   weight       : poids dans la moyenne ponderee (entre 0 et 1, somme categorie
+#                  = category_weight).
+#   confidence   : high|medium|low, declare explicitement, jamais infere.
+#   available_when : condition de disponibilite (sinon facteur exclu).
+#   normalize    : methode de normalisation -> [0, 1].
+#   units        : unite de la valeur brute.
+#   rationale    : justification experte (champ textuel libre).
+#   notes        : hypotheses / limites.
+
+factors:
+
+  # --------------------------------------------------------------------------
+  # Categorie 1 — Secheresse et climat  (5 facteurs, category_weight = 0.30)
+  # --------------------------------------------------------------------------
+  dryness_climate:
+    category_weight: 0.30
+    category_confidence: high
+    rationale: >
+      La secheresse pilote la disponibilite en eau du combustible et
+      l'evapotranspiration. C'est la categorie qui varie le plus
+      rapidement ; elle est aussi la mieux instrumentee par les sources
+      ouvertes (Open-Meteo, ERA5).
+    factors:
+
+      - id: dry_days_7
+        label: "Jours consecutifs sans pluie > 1 mm (fenetre 7 j)"
+        source: open_meteo_archive
+        weight: 0.020
+        confidence: high
+        units: days
+        normalize:
+          type: linear_piecewise
+          breaks_days: [0, 3, 7, 14, 21]
+          values:     [0.0, 0.4, 0.7, 0.95, 1.0]
+        available_when: "open_meteo_archive_seed_started == true"
+        rationale: >
+          Au-dela de 7 jours sans pluie significative, le combustible fin
+          (aiguilles, litieres) commence un assèchement marque.
+        notes: "Seuil de pluie 'significative' = 1 mm par convention cffdrs."
+
+      - id: dry_days_15
+        label: "Jours consecutifs sans pluie > 1 mm (fenetre 15 j)"
+        source: open_meteo_archive
+        weight: 0.030
+        confidence: high
+        units: days
+        normalize:
+          type: linear_piecewise
+          breaks_days: [0, 7, 15, 25, 30]
+          values:     [0.0, 0.3, 0.7, 0.95, 1.0]
+        available_when: "open_meteo_archive_seed_started == true"
+        rationale: >
+          Meme logique que dry_days_7, avec un seuil de saturation plus
+          eleve (l'inertie du sol et du sous-etage est plus lente).
+        notes: "Interpolation entre dry_days_7 et dry_days_30 attendue."
+
+      - id: dry_days_30
+        label: "Jours consecutifs sans pluie > 1 mm (fenetre 30 j)"
+        source: open_meteo_archive
+        weight: 0.030
+        confidence: high
+        units: days
+        normalize:
+          type: linear_piecewise
+          breaks_days: [0, 14, 30, 45, 60]
+          values:     [0.0, 0.3, 0.7, 0.95, 1.0]
+        available_when: "open_meteo_archive_seed_started == true"
+        rationale: >
+          Memoire longue pour la secheresse des couches profondes (proxy
+          pour DC etat stable longue periode).
+        notes: "Une saison des pluies normale en Gironde casse cette serie."
+
+      - id: canicule_streak
+        label: "Jours consecutifs T max > 35 deg C"
+        source: open_meteo_archive
+        weight: 0.040
+        confidence: medium
+        units: days
+        normalize:
+          type: linear_piecewise
+          breaks_days: [0, 2, 5, 8, 12]
+          values:     [0.0, 0.4, 0.7, 0.95, 1.0]
+        available_when: "open_meteo_archive_seed_started == true"
+        rationale: >
+          Les canicules (> 35 deg C en T max) sont le signe d'un stress
+          thermique extreme sur la vegetation ; en Gironde ce facteur est
+          apparu sur la semaine precurseur des feux 2022.
+        notes: "Confiance medium : la definition meteorologique precise de canicule varie."
+
+      - id: vpd
+        label: "Vapour Pressure Deficit (open meteo)"
+        source: open_meteo_forecast
+        weight: 0.090   # parmi les mieux correles a l'inflammabilite (cf. recherche).
+        confidence: high
+        units: kPa
+        normalize:
+          type: linear_piecewise
+          breaks_kpa:  [0.0, 0.5, 1.5, 3.0, 5.0]
+          values:      [0.0, 0.3, 0.7, 0.95, 1.0]
+        available_when: "open_meteo_forecast_available == true"
+        rationale: >
+          Le VPD est, dans la litterature, le meilleur predicteur
+          d'inflammabilite du combustible fin, souvent meilleur que l'humidite
+          relative seule. Open-Meteo fournit cette variable en prevision
+          horaire.
+        notes: "Variable 'vapour_pressure_deficit' sur Open-Meteo Forecast."
+
+  # --------------------------------------------------------------------------
+  # Categorie 2 — Combustible  (4 facteurs, category_weight = 0.30)
+  # --------------------------------------------------------------------------
+  fuel:
+    category_weight: 0.30
+    category_confidence: medium
+    rationale: >
+      Le pin maritime landais est remarquablement homogene sur de grandes
+      surfaces. La variabilite reelle tient a (a) la part reelle de pin
+      face aux feuillus, (b) l'etat hydrique courant via NDMI, (c) la
+      densite de couvert, (d) les coupes et regenerations recentes.
+    factors:
+
+      - id: pine_maritime_pct
+        label: "Part de pin maritime dans la cellule"
+        source: bdforet_v2
+        weight: 0.10
+        confidence: medium
+        units: percent_0_100
+        normalize:
+          type: linear_piecewise
+          breaks_pct: [0, 25, 50, 75, 100]
+          values:     [0.0, 0.4, 0.7, 0.95, 1.0]
+        available_when: "bdforet_v2_intersected == true"
+        rationale: >
+          Le pin maritime est l'essence dominante du massif landais. Plus
+          la part de pin maritime est elevee, plus le modele FBP C-6 est
+          directement applicable (et plus le risque propagatif est fort).
+        notes: >
+          BD Foret V2 est anterieur aux incendies 2022 et aux tempetes ;
+          valeur affichee = millesime exact (bdforet_vintage). Couplages
+          avec EFFIS burn perimeters en post-traitement.
+
+      - id: ndmi_anomaly
+        label: "Anomalie NDMI vs mediane saisonniere (decade)"
+        source: sentinel2_l2a
+        weight: 0.10
+        confidence: medium
+        units: z_score
+        normalize:
+          type: linear_piecewise
+          breaks_z: [-3.0, -1.5, -0.5, 0.0, 1.5]
+          values:    [0.0,  0.2,  0.7,  0.85, 1.0]
+        available_when: "sentinel2_climatology_built == true"
+        rationale: >
+          L'anomalie de NDMI z-score par rapport a la mediane 5 ans de la
+          meme decade est le signal le plus direct de stress hydrique du
+          combustible vivant. Une chute > 1 z-score = vegetation nettement
+          plus seche que la normale : inflammabilite accrue.
+        notes: "Confiance medium : resolution effective reduite par nuages en zone temperee."
+
+      - id: canopy_density
+        label: "Densite de couvert arboré (HRL Forest ou derive)"
+        source: copernicus_hrl_forest
+        weight: 0.05
+        confidence: medium
+        units: percent_0_100
+        normalize:
+          type: linear_piecewise
+          breaks_pct: [0, 20, 40, 60, 80]
+          values:     [0.0, 0.3, 0.6, 0.85, 1.0]
+        available_when: "copernicus_hrl_forest_loaded == true"
+        rationale: >
+          Une densite de couvert elevee = continuum vertical plus favorable
+          a la transition surface -> cime (facteur multiplicateur du ROS).
+        notes: "HRL Forest 2018 - millesime documente dans cell_static.hrl_vintage."
+
+      - id: cleared_recent
+        label: "Coupe rase ou regeneration recente (drapeau)"
+        source: ndvi_break_detection
+        weight: 0.00
+        confidence: low
+        units: boolean
+        normalize:
+          type: step
+          value_when_true: 1.0
+          value_when_false: 0.0
+          true_within_years_ago: 5
+        available_when: "sentinel2_timeseries_>=_3y == true"
+        rationale: >
+          Coupe rase = remanents d'exploitation au sol + vegetation
+          herbacee dense = conditions de propagation differentes du reste
+          du massif. Drapeau binaire avec poids 0 par defaut : integre
+          via fuel_model_override (cf. config/fuel_models.yaml SB-04 ou
+          equivalent mediterraneen).
+        notes: "Poids 0 : facteur booleen injecte dans le moteur de propag., pas dans le score."
+
+  # --------------------------------------------------------------------------
+  # Categorie 3 — Facteur humain  (4 facteurs, category_weight = 0.30)
+  # --------------------------------------------------------------------------
+  # Categorie critique : la majorite des departs de feu en Gironde sont
+  # d'origine humaine. Cette categorie pese **au moins autant** que le
+  # combustible (cf. SPEC §6.3 reformule).
+  human:
+    category_weight: 0.30
+    category_confidence: medium
+    rationale: >
+      En Gironde (et en France), la majorite des departs de feu sont
+      d'origine humaine : travaux agricoles, lignes electriques, feu de
+      camp, malveillance, occupants en foret. L'approche est distance-
+      gradient + saisonnalite, faute de comptage directe des passages en
+      phase 4 (donnees BDIFF / SDIS exploitable seulement en phase 5).
+    factors:
+
+      - id: dist_road_weighted
+        label: "Distance a la route carrossable la plus proche (ponderee classe)"
+        source: osm_overpass
+        weight: 0.06
+        confidence: medium
+        units: meters
+        normalize:
+          type: linear_piecewise_inv   # plus c'est proche, plus le score est haut.
+          breaks_m:  [0,   50, 200, 500, 2000]
+          values:    [1.0, 0.85, 0.6, 0.3,  0.0]
+        available_when: "osm_overpass_roads == true"
+        rationale: >
+          Une route carrossable est un vecteur d'apport humain (passage,
+          travail, dechets, etincelles). La proximite directe multiplie
+          la probabilite de contact.
+        notes: "Pondere par highway=motorway|trunk|primary|secondary|tertiary (cf. SOURCES.md)."
+
+      - id: dist_leisure_site
+        label: "Distance au camping / aire de loisir / parking"
+        source: osm_overpass
+        weight: 0.09
+        confidence: medium
+        units: meters
+        normalize:
+          type: linear_piecewise_inv
+          breaks_m:  [0,   100, 500, 1500, 5000]
+          values:    [1.0, 0.85, 0.6,  0.3,   0.0]
+        available_when: "osm_overpass_leisure == true"
+        rationale: >
+          En ete, les zones frequentées amenent une densite humaine
+          elevee dans le massif. Les barbecues, feu de camp et dechets
+          verts sont les premiers vecteurs de depart de feu identifies
+          en Gironde en juillet-aout.
+        notes: "Tags OSM : tourism=camp_site, leisure=park, picnic_site, parking."
+
+      - id: dist_builtup_forest_edge
+        label: "Distance a l'interface habitat-foret"
+        source: osm_overpass
+        weight: 0.06
+        confidence: medium
+        units: meters
+        normalize:
+          type: linear_piecewise_inv
+          breaks_m:  [0,    50,  200,  500, 1500]
+          values:    [1.0, 0.85, 0.55, 0.25, 0.0]
+        available_when: "osm_overpass_buildings_or_landuse == true"
+        rationale: >
+          L'interface habitat-foret est la zone d'entree classique des
+          feux d'origine residentielle (dechets, grillades, lignes
+          electriques aeriennes, ecobuage). Distance < 50 m = risque fort.
+        notes: "Tag landuse=residential, building=* dans un buffer de 500 m autour de la cellule."
+
+      - id: seasonality_human_factor
+        label: "Modulation saisonniere du facteur humain"
+        source: derived_from_month
+        weight: 0.09
+        confidence: high
+        units: dimensionless
+        normalize:
+          type: by_month
+          values:
+            jan: 0.10; feb: 0.10; mar: 0.20; apr: 0.35; may: 0.50
+            jun: 0.75; jul: 1.00; aug: 1.00; sep: 0.75; oct: 0.45
+            nov: 0.20; dec: 0.10
+        available_when: "always"
+        rationale: >
+          Le facteur humain est 5 a 10x plus eleve en plein ete qu'en
+          hiver. Sans cette modulation, le score ignorerait la realite
+          operationnelle des SDIS.
+        notes: "Confiance high : pattern annuel tres stable documente SDIS 33 + statistiques ONF."
+
+  # --------------------------------------------------------------------------
+  # Categorie 4 — Terrain  (2 facteurs, category_weight = 0.10)
+  # --------------------------------------------------------------------------
+  # Pente faible en Gironde (departement < 100 m quasi partout) ; la pente
+  # ne contribue pas dominate. Le relief sert surtout aux zones ou il
+  # compte vraiment : vallees Dordogne/Garonne, Entre-deux-Mers, dune
+  # du Pilat, cordon dunaire littoral. Cf. SPEC §6.3 reformule.
+  terrain:
+    category_weight: 0.10
+    category_confidence: medium
+    rationale: >
+      En Gironde, le vent domine tres largement la pente dans la
+      propagation. Le terrain pese ici pour identifier les zones ou il
+      compte reellement, pas pour surponderer l'ensemble.
+    factors:
+
+      - id: slope_aspect_fuel_factor
+        label: "Pente et exposition (facteur multiplicatif, non-score)"
+        source: rge_alti_5m
+        weight: 0.05
+        confidence: low
+        units: degrees
+        normalize:
+          type: linear_piecewise
+          breaks_deg:  [0, 5, 15, 30, 45]
+          values:      [0.0, 0.2, 0.5, 0.85, 1.0]
+        available_when: "rge_alti_loaded == true"
+        rationale: >
+          En Gironde, la pente ne joue qu'au-dessus de 15 deg (coteaux,
+          vallees). En dessous, le signal est inexploitable et il n'y a
+          pas de signal a injecter dans le score : on garde une fonction
+          qui pese peu.
+        notes: "Confiance low : peu de signal en Gironde plate ; facteur plafonne a 5% du total."
+
+      - id: dist_coast_littoral
+        label: "Distance au littoral Atlantique"
+        source: rge_alti_5m_or_corine
+        weight: 0.05
+        confidence: medium
+        units: meters
+        normalize:
+          type: linear_piecewise_inv
+          breaks_m:  [0,    1000, 5000, 20000, 60000]
+          values:    [0.0,  0.2,   0.4,   0.8,    1.0]
+        available_when: "coastline_vector_loaded == true"
+        rationale: >
+          La proximite du littoral module l'humidite residuelle via la
+          brise thermique : brise de mer (entrante l'apres-midi, souvent
+          salvatrice) ou renversement dangereux pour les equipes au sol.
+          En phase 4, on retient la proximite du littoral comme proxy
+          grossier ; un raffinement meteo local est prevu plus tard.
+        notes: "Inverse vs facteurs humains : plus on est LOIN du littoral, plus le score est haut."
+
+  # --------------------------------------------------------------------------
+  # Facteur reserve - PHASE 5 (donnees BDIFF / SDIS 33)
+  # --------------------------------------------------------------------------
+  # Indisponible en phase 4 : pas de jeu d'allumages geolocalise a la
+  # resolution de la grille. **Jamais de defaut implicite** : ce facteur
+  # est EXCLU du calcul tant que la donnee n'est pas disponible ; le
+  # poids est **PAS redistribue** automatiquement aux autres facteurs
+  # par defaut, mais les poids D'AUTRES FACTEURS sont renormalises si
+  # *ce* facteur etait attendu et reste absent.
+  history_optional:
+    category_weight: 0.00
+    category_confidence: pending
+    rationale: >
+      La densite de departs historiques dans un rayon de 2 km est
+      aujourd'hui la **donnee qui manque le plus**. La PHASE 5 peut la
+      delivrer via BDIFF ou un partenariat SDIS 33, sous reserve de
+      resolution compatible avec la grille de calcul.
+    factors:
+
+      - id: hist_departures_2km
+        label: "Densite de departs historiques (rayon 2 km)"
+        source: bdiff_or_sdis_or_effis
+        weight: 0.00   # pas pris en compte tant que PHASE 5 non livree.
+        confidence: pending
+        units: count_per_km2_per_year
+        normalize:
+          type: linear_piecewise
+          breaks_count: [0,   0.5,  2,    5,    10]
+          values:      [0.0, 0.2,  0.5,  0.85, 1.0]
+        available_when: "phase_5_dataset_available == true   # defaut : false"
+        rationale: >
+          L'historique infra-communal des allumages, agrege a la
+          resolution communale, est aujourd'hui trop grossier pour la
+          grille. La PHASE 5 ne demarre pas sans cette donnee
+          geolocalisee a la resolution adequate.
+        notes: >
+          Si la donnee n'est pas disponible, ce facteur est **exclu**
+          et son poids **PAS redistribue** automatiquement (cf.
+          aggregate_method ci-dessus : `weighted_sum_with_renorm_optional`).
+          Cf. RISK_SCORE §2/§4.1 et SPEC §6.3 reformule.
+
+# ----------------------------------------------------------------------------
+# Methodes d'agregation
+# ----------------------------------------------------------------------------
+aggregation:
+  ignition_risk:
+    method: "weighted_sum_with_renormalization"
+    factors_included:
+      - human.dist_road_weighted
+      - human.dist_leisure_site
+      - human.dist_builtup_forest_edge
+      - human.seasonality_human_factor
+      - dryness_climate.dry_days_7
+      - dryness_climate.canicule_streak
+    rationale: >
+      ignition_risk privilegie le facteur humain et la secheresse des
+      combustibles fins (litieres, aiguilles).
+  spread_risk:
+    method: "weighted_sum_with_renormalization"
+    factors_included:
+      - dryness_climate.vpd
+      - dryness_climate.dry_days_30
+      - fuel.pine_maritime_pct
+      - fuel.ndmi_anomaly
+      - human.terrain.fuel.slope_aspect_fuel_factor
+      - terrain.dist_coast_littoral
+      - fuel.canopy_density
+    rationale: >
+      spread_risk privilegie le combustible, le vent (via FWI),
+      la continuite verticale et le terrain.
+  display_risk:
+    method: "max(ignition_risk, spread_risk)"
+    rationale: >
+      Le score affiche est le max des deux. On conserve `source`
+      pour indiquer lequel domine.
+    no_probability: true   # cf. SPEC §6.4 reformule.
+
+# ----------------------------------------------------------------------------
+# Sortie : contrat API pour /api/risk/cell/{id}
+# ----------------------------------------------------------------------------
+output_contract:
+  score_0_100: int   # arrondi sans decimal.
+  class: string      # une des 6 classes EFFIS.
+  contributions:
+    - factor_id: string
+      raw_value: float | null
+      normalize_value: float
+      weight: float
+      contribution_absolute: float
+      contribution_relative: float   # rapport normalise, somme ~ 1.
+  quality:
+    bdforet_vintage: date | null
+    sentinel_last_acquisition: date | null
+    firms_age_seconds: int | null
+    open_meteo_age_minutes: int | null
+    fuel_model_confidence_weighted: float | null
+    facteur_manquant_ids: list[string]
+  ros_dispersion_ratio: float | null   # ROS_FBP / ROS_Roth. Nul si Scope A.
+
+# ----------------------------------------------------------------------------
+# Tests obligatoires (cf. PHASE_PLAN.md PHASE 4 — Critères de sortie)
+# ----------------------------------------------------------------------------
+tests_required:
+  - tests/science/test_local_coefficient.py::test_weights_sum_to_one
+  - tests/science/test_local_coefficient.py::test_renormalization_if_missing
+  - tests/science/test_local_coefficient.py::test_no_confidence_percent_in_output
+  - tests/science/test_local_coefficient.py::test_no_default_for_missing
+  - tests/science/test_risk.py::test_ignition_and_spread_are_separated
+  - tests/science/test_risk.py::test_decomposition_sum_to_one_when_all_available
+  - tests/science/test_risk.py::test_dispersion_band_visible_when_two_models
+
+# ----------------------------------------------------------------------------
+# Notes finales
+# ----------------------------------------------------------------------------
+notes: >
+  Tous les poids et seuils de normalisation sont des **choix d'expert**
+  explicites (cf. SPEC §6.3 reformule : pas d'auto-calibrage tant que
+  PHASE 5 n'a pas livre un dataset d'allumages geolocalises validant
+  leur reformulation). Toute modification de ce fichier doit etre
+  documentee dans le journal de decisions en bas de
+  docs/PHASE_PLAN.md. Ce fichier est lu au runtime - un hot-reload est
+  recommande en developpement ; en production, un redeploiement est
+  requis pour qu'une modification soit effective.

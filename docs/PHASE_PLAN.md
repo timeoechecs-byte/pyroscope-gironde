@@ -203,38 +203,55 @@ ni de calcul encore.
 - [ ] Couches végétation/essences/pente affichées et cliquables.
 - [ ] Mode dégradé Sentinel-2 validé (test manuel).
 
----
+---## PHASE 4 — Propagation et coefficient local
 
-## PHASE 4 — Propagation et coefficient local
+**Statut** : phase **en cours**. Spec figée, code moteur gelé tant que la
+relecture des docs n'est pas validée par l'équipe-projet.
 
-**Périmètre** :
-- Modèle de **Rothermel (1972)** : ROS, longueur de flamme **Byram**, ellipse
-  **Van Wagner/Alexander**.
-- **Cônes de propagation à 1 / 3 / 6 / 12 heures** par cellule, calculés sur la
-  prévision de vent correspondante (jamais sur vent figé).
-- Coefficient de danger local Gironde — **8 facteurs** avec pondérations chargées
-  depuis `backend/app/science/coefficients.yaml` (éditable, pas en dur).
-- **Score de risque final** sur **échelle 0-100 + classe EFFIS**, sortie structurée
-  avec **décomposition des contributions** (facteur × poids) et **indicateur de
-  qualité de donnée**.
-- **Mode simulation** : l'utilisateur pose un point de départ fictif sur la carte et
-  visualise le cône correspondant sans prétendre à un incendie réel.
+**Périmètre** (Scope B validé — [`docs/FBP_VS_ROTHERMEL.md`](FBP_VS_ROTHERMEL.md)) :
+
+- **FBP primaire** (CFFWIS / Van Wagner 1987) : `cffdrs` Python ou réimplémentation
+  testée contre `cffdrs::test_fbp_*`. Type par défaut C-6 *Conifer Plantation*,
+  fallback C-7. ROS, intensité Byram, longueur de flamme, type de feu, transition
+  surface/intermittent/cime.
+- **Rothermel secondaire** : `pyrolog` ou réimplémentation testée contre
+  BehavePlus / Andrews 2018 RMRS-GTR-371.
+- **Bande d'incertitude inter-modèle** : `ROS_FBP / ROS_Roth` affichée en UI.
+- **Cônes de propagation à 1 / 3 / 6 / 12 h** par cellule, **vent par échéance**,
+  pas figé.
+- **Coefficient local Gironde** — **14 facteurs** en 4 catégories, pondérations
+  chargées depuis [``config/local_coefficient.yaml`](../config/local_coefficient.yaml)
+  (éditable, valeurs expert, `confidence: high|medium|low`, **jamais de défaut
+  implicite**).
+- **Score de risque = deux scores séparés** : `ignition_risk` + `spread_risk`, cf.
+  [`docs/RISK_SCORE.md`](RISK_SCORE.md).
+- **Mode simulation** : l'utilisateur pose un point d'allumage fictif, visualise la
+  progression cellule à cellule.
 
 **Hors périmètre** : ML, entraînement supervisé.
 
 **Critères d'entrée** :
+
 - [ ] PHASE 3 terminée, végétation+terrain disponibles.
-- [ ] `coefficients.yaml` initialisé et revu.
+- [ ] Decisions documents validés : FBP_VS_ROTHERMEL.md, RISK_SCORE.md,
+      config/local_coefficient.yaml.
 
 **Critères de sortie** :
-- [ ] Tests `tests/science/test_rothermel.py` et `test_gironde_factor.py` verts sur
-      cas publiés.
-- [ ] `GET /api/risk/cells` : score borné [0, 100], décomposition présente, qualité
-      présente.
-- [ ] Mode simulation joue sans warning ; aucune valeur sortie n'est appelée
-      « probabilité ».
-- [ ] **Aucune formule « confiance : X % »** n'apparaît dans l'UI. L'incertitude est
-      rendue via intervalle ou dispersion inter-modèles.
+
+- [ ] `tests/science/test_local_coefficient.py` vert : somme des poids = 1.0,
+      renormalisation si facteur manquant, **jamais de default implicite**,
+      **aucun "confidence: X %" en sortie**.
+- [ ] `tests/science/test_fbp.py` : cas de référence `cffdrs` rejoués avec
+      tolérance 1e-4 ; C-6 par défaut + fallback C-7 vérifié.
+- [ ] `tests/science/test_rothermel.py` : Rothermel-Scott&Burgan testé contre
+      `pyrolog` ou BehavePlus 6-series.
+- [ ] `GET /api/risk/cells` : deux scores `ignition_risk` et `spread_risk`
+      toujours distincts ; décomposition présente ; qualité propagée ;
+      `ros_dispersion_ratio` présent si Scope B actif.
+- [ ] Mode simulation avec encart non masquable.
+- [ ] **`docs/VALIDATION_2022.md`** rédigé : rétrospective Landiras + La Teste-de-Buch
+      avec écarts documentés (sous-estimation explicite attendue — limites du
+      domaine de validité du modèle).
 
 ---
 

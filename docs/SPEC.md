@@ -220,16 +220,48 @@ avec les corrections d'usage :
 - **Classes de danger EFFIS** affichées : très faible / faible / modéré / élevé / très
   élevé / extrême.
 
-### 6.2 Propagation potentielle (Rothermel)
+### 6.2 Propagation potentielle — FBP primaire + Rothermel secondaire
 
-Modèle de **Rothermel (1972)** pour la vitesse de propagation (**ROS**), avec :
+**Décision archivée** : [`docs/FBP_VS_ROTHERMEL.md`](FBP_VS_ROTHERMEL.md).
+Scope B validé 2026-07-27. FBP (CFFWIS / Service canadien des forêts) primaire,
+Rothermel secondaire. Quatre arguments : cohérence ISI/BUI natifs, feu de cime
+natif, C-6 *Conifer Plantation* structurellement aligné sur le massif landais,
+bande d'incertitude inter-modèle.
 
-- Modèles de combustible standards (**Anderson 13** ou **Scott & Burgan 40**) associés
-  aux classes de la **BD Forêt V2** et de **CORINE Land Cover** ;
-- Correction de pente ;
-- Correction de vent ;
-- **Longueur de flamme (Byram)** et intensité du front ;
-- Direction du front dominée par le vent, **ellipse de propagation (Van Wagner / Alexander)**.
+**Modèle primaire — CFFWIS / FBP** (Van Wagner 1987, Forestry Canada Fire
+Behaviour Prediction) :
+
+- Entrées natives : `isi`, `bui`, `fuel_type` (issu de PHASE 2).
+- Type de combustible par défaut : **C-6 *Conifer Plantation***, *fallback* C-7
+  (*Pinus ponderosa / Pseudotsuga menziesii*) si lande/peuplement jeune.
+- **Transition surface / intermittent / cime** via SFC et OAFCC — natif.
+- Sorties : ROS en m/min, intensité par Byram, longueur de flamme, type de feu.
+
+**Modèle secondaire — Rothermel (1972) + Scott & Burgan 40** :
+
+- Standard américain (BehavePlus, FARSITE, etc.).
+- Modèles de combustible standards (**Scott & Burgan 40**) associés aux classes
+  de la **BD Forêt V2** et de **CORINE Land Cover**.
+- Surface uniquement : nécessite une extension Van Wagner 1977 pour le
+  passage en feu de cime.
+- Sorties : ROS en m/min, longueur de flamme **Byram**, intensité du front,
+  direction du front, **ellipse Van Wagner / Alexander**.
+
+**Sortie attendue par cellule** :
+
+| Grandeur | Symbole | Unité |
+|---|---|---|
+| Vitesse de propagation de la tête | ROS | m/min |
+| Vitesse des flancs et de l'arrière | — | m/min |
+| Intensité du front (Byram) | I | kW/m |
+| Longueur de flamme | L | m |
+| Combustible consommé | w | kg/m² |
+| Type de feu | — | surface / intermittent / cime |
+| Ratio de dispersion | `ROS_FBP / ROS_Roth` | sans unité (bande UI) |
+
+Relation de Byram : `I = H × w × R`, **H chaleur de combustion (kJ/kg)** ;
+longueur de flamme par `L = a × I^b` (Anderson 1969 ou Thomas 1963 selon
+modèle), **coefficients selon publication d'origine, unités d'origine**.
 
 **Sortie** : pour chaque cellule, un **cône de propagation à 1 h, 3 h, 6 h et 12 h**,
 calculé avec la **prévision de vent correspondante**, pas avec le vent courant figé.
@@ -248,22 +280,46 @@ configuration **YAML éditable** (pas en dur dans le code) :
    (camping, aire, parking).
 6. **Densité de départs de feux historiques dans un rayon de 2 km**.
 7. **Nombre de jours de canicule consécutifs** (T max > 35 °C).
-8. **Pente et exposition**.
+8. **Pente et exposition**.### 6.4 Score de risque final — deux scores séparés
 
-### 6.4 Score de risque final
+Le score de risque est **deux valeurs distinctes**, **jamais un chiffre unique**
+([`docs/RISK_SCORE.md`](RISK_SCORE.md)) :
 
 ```
-risque = f(FWI_normalisé, coefficient_local, ROS_potentielle, facteur_humain)
+ignition_risk = f₁(facteur_humain, sécheresse_fins, canicule)
+spread_risk   = f₂(FWI_normalisé, ROS_potentielle, continuité_combustible, terrain)
+
+cell_risk     = { ignition_risk, spread_risk, contributions, quality }
+display_risk  = max(ignition_risk, spread_risk)   # jamais un chiffre unique ; source = dominante
 ```
+
+**Justification** : une cellule au cœur du massif landais, loin de toute route, a
+un `ignition_risk` **faible** et un `spread_risk` **extrême** ; fusionner en une
+seule valeur détruit l'information. Les feux de **Landiras** et **La Teste-de-Buch**
+(2022) étaient des feux à ignition interne basse et propagation extrême — un
+score unique aurait été médian et trompeur.
+
+Composition complète, grilles de classes, contrat API, dispersion inter-modèle :
+[`docs/RISK_SCORE.md`](RISK_SCORE.md).
+Pondérations par facteur : [`config/local_coefficient.yaml`](../config/local_coefficient.yaml).
 
 **Exigences impératives** :
 
-- Échelle **0-100** + classe qualitative, **jamais de probabilité** (« 96,8 % de chance »).
-  Un pourcentage serait scientifiquement faux et dangereusement trompeur : aucun modèle
-  calibré sur observations validées n'est disponible.
-- **Décomposition des contributions** affichée au clic sur la cellule (facteur, poids,
-  valeur).- **Indicateur de qualité de donnée** : quelles sources étaient disponibles, à quelle heure, avec quelle latence.
-- **Aucune formulation de « confiance : X % »** n'est affichée à l'utilisateur — **jamais**. L'incertitude s'exprime par **dispersion inter-modèles** (PHASE 5+) ou par **intervalle**, jamais par un chiffre de confiance unique fabriqué. Cette interdiction pèse sur **toutes** les sorties (score final, FWI par cellule, probabilité sous-jacente d'un modèle calibré) : la calibration Platt/isotonique reste un processus **interne** au modèle ML, jamais exposé tel quel.
+- **Échelle 0-100 + classe qualitative**. **Jamais de probabilité**
+  (« 96,8 % de chance »). Un pourcentage serait scientifiquement faux et
+  dangereusement trompeur : aucun modèle calibré sur observations validées
+  n'est disponible (cf. contrainte **C-02** *via* §6.4 initiale).
+- **Décomposition des contributions** affichée au clic sur la cellule (facteur,
+  poids, valeur, contribution relative) — **nécessaire, non optionnel**.
+- **Indicateur de qualité de donnée** : quelles sources étaient disponibles, à
+  quelle heure, avec quelle latence, avec quel `fuel_model_confidence`.
+- **Aucune formulation de « confiance : X % »** n'est affichée à l'utilisateur —
+  **jamais**. L'incertitude s'exprime par **dispersion inter-modèles**
+  (`ros_dispersion_ratio`) ou par **intervalle**, jamais par un chiffre de
+  confiance unique fabriqué. Cette interdiction pèse sur **toutes** les sorties
+  (score final, FWI par cellule, probabilité sous-jacente d'un modèle calibré) :
+  la calibration Platt/isotonique reste un processus **interne** au modèle ML,
+  jamais affiché tel quel.
 
 ---
 
@@ -316,3 +372,5 @@ risque = f(FWI_normalisé, coefficient_local, ROS_potentielle, facteur_humain)
 | **Phase Pré-0** | Reformulation de la **condition d'entrée PHASE 5** (porte a/b/c) : (a) jeu d'allumages géolocalisé à résolution compatible avec la grille, (b) stratégie d'échantillonnage négatif documentée, (c) validation temporelle par blocs battant le baseline FWI. | La provenance (BDIFF, SDIS 33, autre) devient indifférente tant que les trois conditions sont remplies. BDIFF agrégé à la commune est noté trop grossier pour cellules 250 m ; à vérifier via la consultation détaillée avant de s'engager. |
 | **Phase Pré-0** | **Webcams publiques + ML** : **hors périmètre v1**, justifié par (a) droits sur le flux, (b) RGPD sur personnes identifiables, (c) précision de détection faible → surtout faux positifs. | Évite un ticket « en attente juriste » de deux ans sans produire de valeur. Réintroduction uniquement sur cas d'usage précis + validation juridique explicite. |
 | **Phase Pré-0** | **PWA + notifications** : **garde-fou explicite** dans l'UI : « notifications informatives, sans garantie de délivrance — pour l'alerte, 18 / 112 et les canaux officiels ». Repli documenté : email ou flux RSS. | iOS ne supporte web push que pour PWA installée sur l'écran d'accueil ; cette formulation protège contre une lecture opérationnelle du push. |
+| **PHASE 4** | **Moteur de propagation = FBP primaire + Rothermel secondaire** (Scope B). Type de combustible par défaut : **C-6 *Conifer Plantation*** (FBP), fallback C-7 si lande/peuplement jeune. Quatres arguments : cohérence ISI/BUI natifs en entrées FBP, transition surface/intermittent/cime intégrée, C-6 structurellement aligné sur le massif landais, bande d'incertitude inter-modèle affichable. Décision archivée : [`docs/FBP_VS_ROTHERMEL.md`](FBP_VS_ROTHERMEL.md). | Branchement natif sur PHASE 2 (validation croisée cffdrs). Limite acceptée : aucune cross-validation FBP-C-6 spécifique Landes de Gascogne dans la littérature peer-reviewed identifiée à ce jour — clause de revue post-PHASE 6 consignée dans [`docs/PHASE_PLAN.md`](PHASE_PLAN.md). |
+| **PHASE 4** | **Score de risque = deux scores séparés** (`ignition_risk` + `spread_risk`), **jamais un chiffre unique**. Score d'agrégation UI = `max(ignition, spread)` avec `source` indiquant le régime dominant. Aucune probabilité d'incendie ni « confiance : X % » exposés. Pondérations explicites d'expert dans [`config/local_coefficient.yaml`](../config/local_coefficient.yaml) (14 facteurs, 4 catégories, `confidence: high\|medium\|low` par facteur). | Les feux landais 2022 étaient à ignition interne basse et spread extrême : fusionner en un chiffre produirait un score médian trompeur. La règle « pas d'auto-calibrage sans dataset » empêche des poids ajustés en l'absence de données d'allumages étiquetées (PHASE 5 conditionnelle). |
