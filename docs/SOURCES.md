@@ -24,7 +24,7 @@ contraintes de coût, et notes spécifiques.
 | NASA FIRMS — `VIIRS_NOAA20_NRT` | Planifiée **PHASE 1 (MVP)** | idem | idem | 0 € | idem | Combiné avec SNPP pour complétude temporelle. |
 | NASA FIRMS — `VIIRS_NOAA21_NRT` | Planifiée **PHASE 1 (MVP)** | idem | idem | 0 € | idem | Plus récent satellite ; moins d'historique. |
 | NASA FIRMS — `MODIS_NRT` | Planifiée **PHASE 1 (MVP)** | idem | idem | 0 € | idem | Fallback si VIIRS indisponible. Résolution plus grossière (1 km). |
-| EFFIS / Copernicus EMS (WMS) | Planifiée **PHASE 2** | aucune clé | WMS | 0 € | ouverte, attribution | Overlay optionnel dans MapLibre : points chauds, surfaces brûlées, FWI européen. `GetCapabilities` lu à l'init, **noms de couches lus dynamiquement** (ils changent selon la version, ne pas coder en dur). |
+| EFFIS / Copernicus EMS (WMS) | Planifiée **PHASE 2** | aucune clé | WMS | 0 € | ouverte, attribution | Overlay optionnel dans MapLibre : points chauds, surfaces brûlées, FWI européen. `GetCapabilities` lu à l'init, **noms de couches lus dynamiquement** (ils changent selon la version, ne pas coder en dur). **URL vivante vérifiée (juillet 2026)** : `https://maps.effis.emergency.copernicus.eu/effis?service=WMS&request=GetCapabilities` — ⚠️ le tutoriel original cite `/gwis`, qui retourne HTTP 500. **Ne pas coder d'URL en dur** dans le code : lire le `GetCapabilities` au runtime. |
 
 ---
 
