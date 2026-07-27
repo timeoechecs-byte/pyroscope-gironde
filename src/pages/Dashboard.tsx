@@ -22,6 +22,8 @@ import IsothermLayer from "@/components/IsothermLayer";
 import RiskLayer from "@/components/RiskLayer";
 import SpreadEllipseLayer from "@/components/SpreadEllipseLayer";
 import RiskDecompositionPanel from "@/components/RiskDecompositionPanel";
+import SimulationPanel from "@/components/SimulationPanel";
+import SimulationMapLayer from "@/components/SimulationMapLayer";
 import {
   AlertTriangle,
   Eye,
@@ -36,6 +38,7 @@ import {
   SlidersHorizontal,
   ArrowRightLeft,
   Grip,
+  Play,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -99,6 +102,13 @@ export default function Dashboard() {
   const [selectedRiskCell, setSelectedRiskCell] = useState<RiskDetail | null>(null);
   const [riskMode, setRiskMode] = useState<"combined" | "ignition" | "spread">("combined");
   const [horizon, setHorizon] = useState(6);
+
+  // ── Simulation state ────────────────────────────────────────────────
+  const [simMode, setSimMode] = useState(false);
+  const [ignitionPoint, setIgnitionPoint] = useState<{ lat: number; lon: number } | null>(null);
+  const [simResult, setSimResult] = useState<any>(null);
+  const [simIsRunning, setSimIsRunning] = useState(false);
+  const [simCurrentTime, setSimCurrentTime] = useState(0);
 
   const [layers, setLayers] = useState<LayerToggle[]>([
     { id: "hotspots", label: "Points chauds", icon: Flame, enabled: true, available: false, eta: "PHASE 1 — Backend requis" },
@@ -177,6 +187,73 @@ export default function Dashboard() {
     setSelectedRiskCell(detail);
   };
 
+  // ── Simulation handlers ──────────────────────────────────────────────
+  const handleMapClickSim = useCallback((lat: number, lon: number) => {
+    if (simMode) {
+      setIgnitionPoint({ lat, lon });
+      setSimResult(null);
+      setSimCurrentTime(0);
+    }
+  }, [simMode]);
+
+  const handleSimulationStart = (params: {
+    lat: number; lon: number; datetime: string;
+    duration_h: number; isi: number; bui: number;
+  }) => {
+    setSimIsRunning(true);
+    // Generate demo simulation result
+    const duration = params.duration_h;
+    const epochs = [];
+    let totalCells = 0;
+    for (let h = 1; h <= duration; h++) {
+      const nCells = Math.round(5 + h * 3 + Math.random() * 10);
+      totalCells += nCells;
+      epochs.push({
+        hour: h,
+        n_cells_burned: nCells,
+        area_ha: parseFloat((nCells * 6.25).toFixed(1)),
+        mean_ros: parseFloat((3 + h * 1.2 + Math.random()).toFixed(2)),
+        max_ros: parseFloat((5 + h * 1.5 + Math.random() * 2).toFixed(2)),
+      });
+    }
+
+    // Generate burned cells
+    const burnedCells = [];
+    let cid = 0;
+    for (let h = 0; h < duration; h++) {
+      const nInEpoch = Math.round(5 + h * 3);
+      for (let i = 0; i < nInEpoch; i++) {
+        const offsetLat = (Math.random() - 0.5) * 0.04;
+        const offsetLon = (Math.random() - 0.5) * 0.04;
+        burnedCells.push({
+          cell_id: cid++,
+          lat: params.lat + offsetLat,
+          lon: params.lon + offsetLon,
+          burn_time_min: h * 60 + Math.random() * 60,
+        });
+      }
+    }
+
+    const result = {
+      ignition_lat: params.lat,
+      ignition_lon: params.lon,
+      start_time: params.datetime,
+      duration_h: duration,
+      n_burned_cells: totalCells,
+      total_area_ha: parseFloat((totalCells * 6.25).toFixed(1)),
+      max_ros_m_min: parseFloat((5 + duration * 1.5).toFixed(2)),
+      fire_type: params.isi > 15 ? "crown" : params.isi > 8 ? "intermittent" : "surface",
+      epochs,
+      burned_cells: burnedCells,
+    };
+
+    setTimeout(() => {
+      setSimResult(result);
+      setSimCurrentTime(result.duration_h);
+      setSimIsRunning(false);
+    }, 800);
+  };
+
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
@@ -192,6 +269,17 @@ export default function Dashboard() {
             <span className="text-sm font-semibold tracking-tight">
               PyroScope<span className="text-fire-500">33</span>
             </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant={simMode ? "default" : "ghost"}
+              size="sm"
+              className={`gap-1.5 text-xs ${simMode ? "bg-orange-600 text-white hover:bg-orange-500" : "text-muted-foreground"}`}
+              onClick={() => { setSimMode(!simMode); if (!simMode) setSelectedRiskCell(null); }}
+            >
+              <Play className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Simulation</span>
+            </Button>
           </div>
           <div className="flex items-center gap-3">
             {/* Sources freshness indicator */}
@@ -236,6 +324,16 @@ export default function Dashboard() {
               ellipses={demoEllipses.filter((e) => e.horizon_h <= horizon)}
               visible={ellipseLayerEnabled}
             />
+            {/* Simulation layer */}
+            {simMode && (
+              <SimulationMapLayer
+                map={null as any}
+                ignitionPoint={ignitionPoint}
+                burnedCells={simResult?.burned_cells ?? []}
+                currentTime_h={simCurrentTime}
+                visible={true}
+              />
+            )}
           </MapContainer>
 
           {/* Risk mode selector */}
@@ -399,28 +497,48 @@ export default function Dashboard() {
 
             <Separator className="my-4 bg-border/50" />
 
-            {/* ── Cellule ──────────────────────────────────────── */}
-            <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              <Info className="h-3.5 w-3.5" />
-              Cellule
-            </h3>
-
-            {selectedCell ? (
-              <div className="rounded-md border border-border/50 bg-card p-3">
-                <p className="text-xs font-medium">
-                  {selectedCell.lat.toFixed(4)}, {selectedCell.lon.toFixed(4)}
-                </p>
-                <p className="mt-1 text-[10px] text-muted-foreground/60">
-                  Cliquez sur une cellule pour voir FWI, ROS, score de risque
-                  et décomposition (PHASE 2–4)
-                </p>
-              </div>
+            {/* ── Simulation panel (when active) ──────────────── */}
+            {simMode ? (
+              <SimulationPanel
+                ignitionPoint={ignitionPoint}
+                onIgnitionClear={() => { setIgnitionPoint(null); setSimResult(null); }}
+                onSimulationStart={handleSimulationStart}
+                isRunning={simIsRunning}
+                result={simResult}
+                currentTime_h={simCurrentTime}
+                onTimeChange={setSimCurrentTime}
+              />
+            ) : selectedRiskCell ? (
+              /* Decomposition panel when a risk cell is selected */
+              <RiskDecompositionPanel
+                data={selectedRiskCell}
+                onClose={() => setSelectedRiskCell(null)}
+              />
             ) : (
-              <div className="rounded-md border border-border/50 bg-card/50 p-3">
-                <p className="text-xs text-muted-foreground/60">
-                  Cliquez sur la carte pour voir les données de la cellule
-                </p>
-              </div>
+              <>
+              {/* ── Cellule ──────────────────────────────────────── */}
+              <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <Info className="h-3.5 w-3.5" />
+                Cellule
+              </h3>
+
+              {selectedCell ? (
+                <div className="rounded-md border border-border/50 bg-card p-3">
+                  <p className="text-xs font-medium">
+                    {selectedCell.lat.toFixed(4)}, {selectedCell.lon.toFixed(4)}
+                  </p>
+                  <p className="mt-1 text-[10px] text-muted-foreground/60">
+                    Cliquez sur une cellule risque pour voir la décomposition
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md border border-border/50 bg-card/50 p-3">
+                  <p className="text-xs text-muted-foreground/60">
+                    Cliquez sur la carte pour voir les données de la cellule
+                  </p>
+                </div>
+              )}
+              </>
             )}
 
             <Separator className="my-4 bg-border/50" />
