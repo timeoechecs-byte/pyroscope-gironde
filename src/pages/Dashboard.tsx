@@ -24,6 +24,8 @@ import SpreadEllipseLayer from "@/components/SpreadEllipseLayer";
 import RiskDecompositionPanel from "@/components/RiskDecompositionPanel";
 import SimulationPanel from "@/components/SimulationPanel";
 import SimulationMapLayer from "@/components/SimulationMapLayer";
+import CrisisBanner from "@/components/CrisisBanner";
+import ZoneAlertPanel from "@/components/ZoneAlertPanel";
 import {
   AlertTriangle,
   Eye,
@@ -39,6 +41,8 @@ import {
   ArrowRightLeft,
   Grip,
   Play,
+  ShieldOff,
+  Bell,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -99,6 +103,29 @@ export default function Dashboard() {
     lat: number;
     lon: number;
   } | null>(null);
+
+  // ── Crisis mode state ────────────────────────────────────────────────
+  const [crisisConfig, setCrisisConfig] = useState({
+    active: false,
+    activated_at: null as string | null,
+    degraded_layers: ["simulation", "ellipses", "alerts"] as string[],
+    notification_blocked: false,
+  });
+
+  // ── Zone alerts state ────────────────────────────────────────────────
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [watchedCells, setWatchedCells] = useState<Array<{
+    id: string;
+    lat: number;
+    lon: number;
+    label: string;
+    thresholdIgnition: number;
+    thresholdSpread: number;
+    thresholdFWI: number;
+    pushEnabled: boolean;
+    lastAlert: string | null;
+    triggered: boolean;
+  }>>([]);
   const [selectedRiskCell, setSelectedRiskCell] = useState<RiskDetail | null>(null);
   const [riskMode, setRiskMode] = useState<"combined" | "ignition" | "spread">("combined");
   const [horizon, setHorizon] = useState(6);
@@ -186,6 +213,62 @@ export default function Dashboard() {
     };
     setSelectedRiskCell(detail);
   };
+
+  // ── Crisis mode handlers ────────────────────────────────────────────
+  const [crisisModeActive, setCrisisModeActive] = useState(false);
+
+  const handleCrisisToggle = useCallback((active: boolean) => {
+    setCrisisModeActive(active);
+    setCrisisConfig((prev) => ({
+      ...prev,
+      active,
+      activated_at: active ? new Date().toISOString() : null,
+    }));
+    // Disable simulations and alerts when crisis mode is active
+    if (active) {
+      setSimMode(false);
+      setSimResult(null);
+      setAlertsOpen(false);
+    }
+  }, []);
+
+  // ── Zone alert handlers ───────────────────────────────────────────────
+  const handleAddWatchedCell = useCallback((lat: number, lon: number) => {
+    const newCell = {
+      id: `cell_${Date.now()}`,
+      lat,
+      lon,
+      label: `${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+      thresholdIgnition: 50,
+      thresholdSpread: 70,
+      thresholdFWI: 20,
+      pushEnabled: true,
+      lastAlert: null,
+      triggered: false,
+    };
+    setWatchedCells((prev) => [...prev, newCell]);
+  }, []);
+
+  const handleRemoveWatchedCell = useCallback((id: string) => {
+    setWatchedCells((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  const handleUpdateThreshold = useCallback(
+    (id: string, field: string, value: number) => {
+      setWatchedCells((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, [field]: value } : c
+        )
+      );
+    },
+    []
+  );
+
+  const handleTogglePush = useCallback((id: string, enabled: boolean) => {
+    setWatchedCells((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pushEnabled: enabled } : c))
+    );
+  }, []);
 
   // ── Simulation handlers ──────────────────────────────────────────────
   const handleMapClickSim = useCallback((lat: number, lon: number) => {
@@ -566,6 +649,53 @@ export default function Dashboard() {
                   </div>
                 </div>
               ))}
+            </div>
+
+            <Separator className="my-4 bg-border/50" />
+
+            {/* ── Mode crise ──────────────────────────────────── */}
+            <CrisisBanner
+              config={crisisConfig}
+              onToggle={handleCrisisToggle}
+            />
+
+            <Separator className="my-4 bg-border/50" />
+
+            {/* ── Alertes ──────────────────────────────────────── */}
+            <div className="mb-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`w-full justify-start gap-2 text-xs ${
+                  alertsOpen
+                    ? "bg-accent/30 text-accent-foreground"
+                    : "text-muted-foreground"
+                }`}
+                onClick={() => setAlertsOpen(!alertsOpen)}
+                disabled={crisisConfig.active}
+              >
+                <Bell className={`h-3.5 w-3.5 ${watchedCells.length > 0 ? 'text-fire-500' : ''}`} />
+                <span>Alertes</span>
+                {watchedCells.length > 0 && (
+                  <span className="ml-auto rounded-full bg-fire-600/20 px-1.5 py-0.5 text-[9px] text-fire-500">
+                    {watchedCells.length}
+                  </span>
+                )}
+              </Button>
+
+              {alertsOpen && (
+                <div className="mt-2">
+                  <ZoneAlertPanel
+                    watchedCells={watchedCells}
+                    currentLat={selectedCell?.lat}
+                    currentLon={selectedCell?.lon}
+                    onAddCell={handleAddWatchedCell}
+                    onRemoveCell={handleRemoveWatchedCell}
+                    onUpdateThreshold={handleUpdateThreshold}
+                    onTogglePush={handleTogglePush}
+                  />
+                </div>
+              )}
             </div>
 
             <Separator className="my-4 bg-border/50" />

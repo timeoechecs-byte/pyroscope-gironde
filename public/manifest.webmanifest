@@ -1,17 +1,64 @@
 {
-  "name": "freebuff.com application",
-  "short_name": "freebuff.com",
-  "description": "freebuff.com application",
+  "name": "PyroScope 33 — Suivi du risque d'incendie — Gironde",
+  "short_name": "PyroScope33",
+  "description": "⚠️ Outil expérimental à visée informative et pédagogique. Suivi et évaluation du risque d'incendie de forêt sur le département de la Gironde (France). Ne jamais utiliser pour une décision opérationnelle.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#000000",
+  "background_color": "#0a1a0d",
+  "theme_color": "#c2410c",
+  "orientation": "any",
+  "lang": "fr-FR",
+  "categories": ["weather", "science", "utilities"],
+  "scope": "/",
+  "id": "/",
   "icons": [
     {
-      "src": "/logo.png",
-      "sizes": "any",
+      "src": "/icon-192.png",
+      "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshot-desktop.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide"
+    },
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow"
+    }
+  ],
+  "related_applications": [],
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "Tableau de bord",
+      "short_name": "Dashboard",
+      "description": "Voir la carte et les indicateurs",
+      "url": "/dashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Simulation",
+      "short_name": "Simulation",
+      "description": "Lancer une simulation de propagation",
+      "url": "/dashboard?mode=simulation"
     }
   ]
 }
