@@ -17,7 +17,7 @@ import IsothermLayer from "@/components/IsothermLayer";
 import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
-import { getFirmsApiKey, setFirmsApiKey } from "@/config/api-keys";
+import { getFirmsApiKey } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -26,7 +26,6 @@ import {
   RefreshCw,
   Satellite,
   Map,
-  KeyRound,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -149,22 +148,11 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  // ── Configuration des clés API ────────────────────────────────────
-  // La clé FIRMS est stockée et récupérée via le module api-keys.ts :
-  //   - localStorage du navigateur (persistant, collé UNE SEULE fois)
-  //   - Fallback : variable d'environnement VITE_FIRMS_API_KEY
-  const [firmsKey, setFirmsKey] = useState<string | undefined>(getFirmsApiKey);
-  const [firmsInput, setFirmsInput] = useState("");
+  // ── Clés API ──────────────────────────────────────────────────────
+  // Lues AUTOMATIQUEMENT depuis Freebuff Keys UI (VITE_FIRMS_API_KEY)
+  // via src/config/api-keys.ts. Aucune action manuelle nécessaire.
+  const firmsKey = getFirmsApiKey();
   const firmsConfigured = Boolean(firmsKey);
-
-  /** Colle la clé → localStorage → recharge les données */
-  const handleSaveKey = useCallback(() => {
-    const trimmed = firmsInput.trim();
-    if (trimmed.length < 10) return;
-    setFirmsApiKey(trimmed);
-    setFirmsKey(trimmed);
-    setFirmsInput("");
-  }, [firmsInput]);
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
@@ -359,45 +347,12 @@ export default function Dashboard() {
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
                 <Satellite className="h-3 w-3 text-fire-500" /> NASA FIRMS
               </p>
-              {!firmsConfigured ? (
+              <p className={`text-[10px] ${!firmsConfigured ? "text-yellow-600/70" : "text-green-600/70"}`}>
+                {firmsConfigured ? "✓ Clé configurée" : "Clé manquante — définir VITE_FIRMS_API_KEY dans Freebuff Keys UI"}
+              </p>
+              {firmsConfigured && (
                 <>
-                  <p className="mb-1.5 text-[9px] text-yellow-600/70">
-                    🔑 Colle ta clé FIRMS une seule fois ci-dessous :
-                  </p>
-                  <div className="flex gap-1">
-                    <input
-                      type="password"
-                      value={firmsInput}
-                      onChange={(e) => setFirmsInput(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
-                      placeholder="Clé NASA FIRMS…"
-                      className="flex-1 rounded border border-border/40 bg-background px-2 py-1 text-[10px] font-mono"
-                    />
-                    <Button
-                      variant="default"
-                      size="sm"
-                      className="h-7 text-[10px]"
-                      onClick={handleSaveKey}
-                      disabled={firmsInput.trim().length < 10}
-                    >
-                      OK
-                    </Button>
-                  </div>
-                  <a
-                    href="https://firms.modaps.eosdis.nasa.gov"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-1 block text-[8px] text-blue-500 underline"
-                  >
-                    Obtenir une clé gratuite →
-                  </a>
-                </>
-              ) : (
-                <>
-                  <p className="flex items-center gap-1 text-[9px] text-green-600/70">
-                    <KeyRound className="h-2.5 w-2.5" /> Clé configurée ✓
-                  </p>
-                  <p className="text-[10px] text-muted-foreground/60">
+                  <p className="mt-1 text-[10px] text-muted-foreground/60">
                     {hotspotsOk
                       ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite`
                       : "Aucune détection active"}
