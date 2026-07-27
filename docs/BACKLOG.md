@@ -18,6 +18,9 @@
 | Modélisation de la dispersion des fumées (CAMS) | Valeur ajoutée forte en cas de pollution atmosphérique aiguë, mais hors périmètre pédagogique actuel. | Demande de la préfecture ou d'une ARS lors d'un épisode de pollution. |
 | Couches IGN accessibilité forestière + dessertes DFCI (`ACCESSIBILITE-PHYSIQUE-FORETS`, `NaviForest`) | Probablement le meilleur candidat du lot. | Demande du SDIS 33 ou d'un utilisateur identifié. |
 | Historique long des incendies au-delà de ce que la PHASE 5 aura permis | Dépend des résultats PHASE 5 et de partenariats (BDIFF détaillé, SDIS 33). | Découverte d'un dataset historique compatible avec la grille 1,5 km. |
+| Audit de sécurité complet (CSP, HSTS, dépendances, backup testé) | Audit ponctuel, pas une phase. | Avant toute exposition publique. Voir checklist dans `docs/REVIEWS.md`. |
+| Mode hors-ligne amélioré (cache complet des couches, géocodage offline) | Surcharge de maintenance importante ; version actuelle (SW + âge visible) suffit au besoin documenté. | Demande utilisateur récurrente dans des zones sans couverture réseau. |
+| Revue externe scientifique (INRAE, laboratoires) | Dépend de la disponibilité de relecteurs ; démarche en cours. | Retour reçu et consigné dans `docs/REVIEWS.md`. |
 
 ---
 

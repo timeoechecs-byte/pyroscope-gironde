@@ -26,6 +26,7 @@ import SimulationPanel from "@/components/SimulationPanel";
 import SimulationMapLayer from "@/components/SimulationMapLayer";
 import CrisisBanner from "@/components/CrisisBanner";
 import ZoneAlertPanel from "@/components/ZoneAlertPanel";
+import ExportPanel from "@/components/ExportPanel";
 import {
   AlertTriangle,
   Eye,
@@ -43,6 +44,9 @@ import {
   Play,
   ShieldOff,
   Bell,
+  Download,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -129,6 +133,12 @@ export default function Dashboard() {
   const [selectedRiskCell, setSelectedRiskCell] = useState<RiskDetail | null>(null);
   const [riskMode, setRiskMode] = useState<"combined" | "ignition" | "spread">("combined");
   const [horizon, setHorizon] = useState(6);
+
+  // ── Export state ──────────────────────────────────────────────────
+  const [exportOpen, setExportOpen] = useState(false);
+
+  // ── Mobile sidebar state ─────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // ── Simulation state ────────────────────────────────────────────────
   const [simMode, setSimMode] = useState(false);
@@ -348,12 +358,26 @@ export default function Dashboard() {
       <header className="sticky top-0 z-40 border-b border-border/50 bg-background/90 px-4 py-2 backdrop-blur-sm">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div className="flex items-center gap-2">
+            {/* Mobile sidebar toggle */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="lg:hidden text-muted-foreground hover:text-foreground -ml-1"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label={sidebarOpen ? "Fermer le panneau" : "Ouvrir le panneau"}
+            >
+              {sidebarOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </Button>
             <Flame className="h-5 w-5 text-fire-500" />
             <span className="text-sm font-semibold tracking-tight">
               PyroScope<span className="text-fire-500">33</span>
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
             <Button
               variant={simMode ? "default" : "ghost"}
               size="sm"
@@ -363,16 +387,14 @@ export default function Dashboard() {
               <Play className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Simulation</span>
             </Button>
-          </div>
-          <div className="flex items-center gap-3">
             {/* Sources freshness indicator */}
-            <div className="hidden items-center gap-2 sm:flex">
+            <div className="hidden items-center gap-2 md:flex">
               <div className="h-2 w-2 rounded-full bg-amber-700" />
               <span className="text-xs text-muted-foreground">
                 Backend non connecté
               </span>
             </div>
-            <span className="text-xs text-muted-foreground">
+            <span className="hidden sm:inline text-xs text-muted-foreground">
               {user?.email ?? "Invité"}
             </span>
             <Button
@@ -381,12 +403,29 @@ export default function Dashboard() {
               className="text-muted-foreground hover:text-foreground"
               onClick={handleSignOut}
             >
-              <LogOut className="mr-1 h-3.5 w-3.5" />
+              <LogOut className="mr-0 sm:mr-1 h-3.5 w-3.5" />
               <span className="text-xs hidden sm:inline">Quitter</span>
             </Button>
           </div>
         </div>
+        {/* ── Clean shutdown banner ───────────────────────────── */}
+        <div className="mx-auto mt-1 flex max-w-7xl items-center gap-1.5 rounded-md border border-amber-700/20 bg-amber-700/5 px-2.5 py-1">
+          <AlertTriangle className="h-3 w-3 shrink-0 text-amber-600" />
+          <span className="text-[10px] text-amber-700/80">
+            Données non disponibles — backend non connecté. Les scores affichés sont des
+            illustrations hors production. Sources officielles : SDIS 33, Préfecture, Météo-France.
+          </span>
+        </div>
       </header>
+
+      {/* ── Mobile overlay when sidebar is open on small screens */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
 
       {/* ── Main layout ─────────────────────────────────────────── */}
       <div className="flex flex-1 flex-col lg:flex-row">
@@ -543,7 +582,11 @@ export default function Dashboard() {
         </main>
 
         {/* ── Sidebar ───────────────────────────────────────────── */}
-        <aside className="flex w-full flex-col border-t border-border/50 bg-card/30 lg:w-72 lg:border-l lg:border-t-0">
+        <aside
+          className={`flex w-full flex-col border-t border-border/50 bg-card/30 transition-all duration-200 ease-in-out
+            ${sidebarOpen ? 'max-h-[50vh] lg:max-h-none' : 'max-h-0 overflow-hidden border-t-0 lg:max-h-none'}
+            lg:w-72 lg:border-l lg:border-t-0 ${!sidebarOpen ? 'lg:flex lg:max-h-none' : ''}`}
+        >
           <div className="flex-1 overflow-y-auto p-4">
             {/* ── Couches ──────────────────────────────────────── */}
             <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -694,6 +737,31 @@ export default function Dashboard() {
                     onUpdateThreshold={handleUpdateThreshold}
                     onTogglePush={handleTogglePush}
                   />
+                </div>
+              )}
+            </div>
+
+            <Separator className="my-4 bg-border/50" />
+
+            {/* ── Export ──────────────────────────────────────── */}
+            <div className="mb-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`w-full justify-start gap-2 text-xs ${
+                  exportOpen
+                    ? "bg-accent/30 text-accent-foreground"
+                    : "text-muted-foreground"
+                }`}
+                onClick={() => setExportOpen(!exportOpen)}
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>Exporter</span>
+              </Button>
+
+              {exportOpen && (
+                <div className="mt-2 rounded-md border border-border/50 bg-card p-3">
+                  <ExportPanel onClose={() => setExportOpen(false)} />
                 </div>
               )}
             </div>

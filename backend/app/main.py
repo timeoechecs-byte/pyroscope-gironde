@@ -15,7 +15,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.routers import alerts, crisis, fwi, hotspots, public_api, risk, tiles, vegetation, weather
+from app.routers import alerts, crisis, export, fwi, hotspots, public_api, risk, tiles, vegetation, weather
 from app.settings import BBOX_CALCUL, BBOX_DEPARTEMENT, BBOX_INGESTION, settings
 
 # ── Structured logging ──────────────────────────────────────────────────
@@ -133,6 +133,7 @@ app.include_router(crisis.router)
 app.include_router(alerts.router)
 app.include_router(tiles.router)
 app.include_router(public_api.router)
+app.include_router(export.router)
 
 
 # ── Endpoint: source configuration (BBOX) ──────────────────────────────

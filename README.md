@@ -74,7 +74,7 @@ toute valeur inventée oumockée pour combler un trou.
 | **PHASE 4** | Propagation Rothermel + coefficient Gironde (YAML) + score 0-100 + mode simulation | Planifiée |
 | **PHASE 5** | ML **conditionnée** : jeu d'allumages géolocalisé + validation temporelle par blocs battant le baseline FWI | **Conditionnée** |
 | **PHASE 6** | Mise en production, diffusion et résilience. Performance (MVT, Redis, Brotli), observabilité étendue, alerting technique distinct des notifications utilisateur, surveillance de zone avec avertissement de non-garantie, PWA + hors-ligne avec âge visible, API publique versionnée, accessibilité WCAG AA, mode crise activable manuellement, posture réglementaire (différenciation explicite de la vigilance officielle). | Planifiée |
-| **PHASE 7** | Pérennité, ouverture et extension. `METHODOLOGY.md` + `LIMITATIONS.md`, notebooks de reproduction, ouverture du code (licence consciente), revue externe à 3 regards (scientifique INRAE, opérationnel SDIS 33/DFCI, technique), extension géographique 33 → 33+40+47 conditionnée à un socle solide, plan de continuité, décision tranchée **personnel / avec utilisateurs**. | Planifiée |
+| **PHASE 7** | Pérennité, ouverture et extension. Export GeoJSON/CSV, `METHODOLOGY.md` + `LIMITATIONS.md`, ouverture du code (AGPL-3.0, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`), revue externe et audit de sécurité (`docs/REVIEWS.md`), responsive mobile, backlog priorisé, plan de continuité (bandeau arrêt propre). | **Livrée** 🤝 |
 | **Clôture** | **La feuille de route s'arrête à PHASE 7. Pas de phase 8.** Tout ce qui suit est dans [`docs/BACKLOG.md`](docs/BACKLOG.md), avec critères d'arbitrage stricts et tableau permanent des éléments volontairement retirés. | **Scellée** |
 
 ## Documentation
