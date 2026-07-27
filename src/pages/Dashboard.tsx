@@ -148,19 +148,15 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   // ── Configuration des clés API ────────────────────────────────────
-  // Clé FIRMS : Freebuff Keys UI (variable VITE_FIRMS_API_KEY)
-  // Si absente, on utilise la clé intégrée au build
-  const FIRMS_KEY_HARDCODED = ""; // ← Colle ta clé ici si le Keys UI ne fonctionne pas
-  const firmsKey =
-    (import.meta.env.VITE_FIRMS_API_KEY as string | undefined) ||
-    FIRMS_KEY_HARDCODED ||
-    undefined;
+  // Clé FIRMS injectée via Freebuff Keys UI (variable VITE_FIRMS_API_KEY)
+  // Ou via fichier .env.local à la racine du projet.
+  // Sans clé : hotspots et périmètres désactivés, message dans la sidebar.
+  const firmsKey = (import.meta.env as Record<string, string | undefined>).VITE_FIRMS_API_KEY;
   const firmsConfigured = Boolean(firmsKey);
-  const firmsKeySource = import.meta.env.VITE_FIRMS_API_KEY
-    ? "env (Keys UI)"
-    : FIRMS_KEY_HARDCODED
-      ? "constante"
-      : "aucune";
+
+  // Diagnostic : voir dans la console F12 ce qui est dispo
+  console.log("[PyroScope] VITE_FIRMS_API_KEY =", firmsKey ? "✓ présente (" + firmsKey.substring(0, 4) + "...)" : "✗ absente");
+  console.log("[PyroScope] VITE_ vars:", Object.keys(import.meta.env as object).filter(k => k.startsWith("VITE_")));
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
