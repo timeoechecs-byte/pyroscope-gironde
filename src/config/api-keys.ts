@@ -1,50 +1,41 @@
 /**
- * api-keys.ts — Récupération automatique des clés API PyroScope 33.
+ * api-keys.ts — Récupération AUTOMATIQUE des clés API.
  *
- * Mécanismes de lecture (par ordre de priorité) :
- *   1. import.meta.env.VITE_*      — Freebuff Keys UI (si serveur démarré après)
- *   2. __VITE_*__ globaux           — Défini dans vite.config.ts (define)
- *   3. localStorage                 — Collé manuellement une fois par l'utilisateur
+ * Mécanismes :
+ *   1. import.meta.env.VITE_FIRMS_API_KEY (Freebuff Keys UI, build-time)
+ *   2. __VITE_FIRMS_API_KEY__ (vite.config.ts define, serve-time)
+ *   3. localStorage (fallback utilisateur)
  *
- * Le module api-keys.ts lit TOUTES les clés dès l'import.
- * Les clés non trouvées = undefined → le Dashboard les ignore.
+ * Aucune interaction manuelle nécessaire si la clé est dans Freebuff Keys UI.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────
 
 export interface ApiKeys {
-  /** NASA FIRMS — hotspots satellite feux actifs */
   firms?: string;
 }
 
-// ── Déclaration des globaux Vite define ───────────────────────────────
+// ── Les globaux injectés par vite.config.ts (define) ──────────────────
 declare const __VITE_FIRMS_API_KEY__: string | undefined;
 
-// ── Lecture depuis toutes les sources ──────────────────────────────────
+// ── Lecture multi-source ───────────────────────────────────────────────
 
-/** Tente de lire une valeur depuis toutes les sources */
 function readKey(
   envName: string,
-  globalName: string | undefined,
+  defineGlobal: string | undefined,
   lsKey: string,
 ): string | undefined {
-  // 1. import.meta.env (Freebuff Keys UI)
+  // 1. import.meta.env (Vite env vars — build-time)
   const envVal = (import.meta.env as Record<string, string | undefined>)[envName];
   if (envVal && envVal.length > 6) {
     localStorage.setItem(lsKey, envVal);
     return envVal;
   }
 
-  // 2. Global define (vite.config.ts)
-  if (globalName) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const globalVal = (typeof globalThis !== "undefined" ? (globalThis as any)[globalName] : undefined) as string | undefined;
-      if (globalVal && globalVal.length > 6) {
-        localStorage.setItem(lsKey, globalVal);
-        return globalVal;
-      }
-    } catch { /* ignore */ }
+  // 2. define global (vite.config.ts — serve-time, après restart)
+  if (defineGlobal && defineGlobal.length > 6) {
+    localStorage.setItem(lsKey, defineGlobal);
+    return defineGlobal;
   }
 
   // 3. localStorage (collé par l'utilisateur)
@@ -54,15 +45,11 @@ function readKey(
   return undefined;
 }
 
-// ── Lecture de toutes les clés ────────────────────────────────────────
-
-const firmsKey = readKey("VITE_FIRMS_API_KEY", "__VITE_FIRMS_API_KEY__", "pyroscope_firms_key");
+// ── Lecture et export ──────────────────────────────────────────────────
 
 export const API_KEYS: ApiKeys = {
-  firms: firmsKey,
+  firms: readKey("VITE_FIRMS_API_KEY", __VITE_FIRMS_API_KEY__, "pyroscope_firms_key"),
 };
-
-// ── Helpers ────────────────────────────────────────────────────────────
 
 export function getFirmsApiKey(): string | undefined {
   return API_KEYS.firms;
