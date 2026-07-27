@@ -236,6 +236,29 @@ Les trois bboxes sont dérivées à la construction de l'app via
 `backend/app/geo/bbox.py` (`pyproj.Geod` pour la distance métrique). Aucune n'est
 codée en dur dans la logique métier.
 
+### Convention de bbox par service
+
+Chaque provider attend un **ordre différent** des bornes de la bbox. C'est une source
+classique de bug d'intégration : trois conventions cohabitent dans ce projet.
+
+| Service | Ordre attendu | Format effectif |
+| --- | --- | --- |
+| NASA FIRMS | `ouest,sud,est,nord` | inline URL : `/api/area/csv/[MAP_KEY]/[SOURCE]/W,S,E,N/[jours]` |
+| Copernicus CDS / CDSE Process API | `nord,ouest,sud,est` | param `area=[N,W,S,E]` |
+| OpenStreetMap / Overpass | `sud,ouest,nord,est` | coords `(S,W,N,E)` dans la query |
+| IGN Géoplateforme (WFS) | `nord,sud,est,ouest` ou `minx,miny,maxx,maxy` selon la capacité | selon `GetCapabilities` |
+| Open-Meteo | lat+lon en **params distincts** (pas de bbox) | `latitude=...&longitude=...` accepte plusieurs valeurs séparées par virgules |
+
+Un utilitaire unique `backend/app/geo/bbox.py` expose
+
+```python
+def bbox_for(service: str) -> tuple[float, float, float, float]:
+    """Retourne la bbox dans la convention exacte du service appelé."""
+```
+
+qu'aucune couche métier ne contourne. Cette fonction est testée contre chacun des
+cinq providers dans `tests/geo/test_bbox.py` (round-trip vers la valeur attendue).
+
 ### Variables d'environnement — frontend
 
 | Variable | Défaut | Description |
@@ -250,16 +273,17 @@ codée en dur dans la logique métier.
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql://pyroscope:pyroscope@postgres:5432/pyroscope` | Postgres+PostGIS+TimescaleDB. |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis. |
-| `FIRMS_API_KEY` | (vide) | Clé gratuite NASA FIRMS (CSV API). |
-| `FIRMS_MAP_KEY` | (vide) | Map key FIRMS (web services). |
-| `OPEN_METEO_URL` | `https://api.open-meteo.com/v1` | Base URL Open-Meteo Forecast. |
-| `OPEN_METEO_ARCHIVE_URL` | `https://archive-api.open-meteo.com/v1/archive` | Base URL Open-Meteo Historical (PHASE 2). |
-| `OPEN_METEO_AIR_URL` | `https://air-quality-api.open-meteo.com/v1` | Base URL Open-Meteo Air Quality. |
-| `COPERNICUS_USER` / `COPERNICUS_PASS` | (vide) | Identifiants Copernicus Data Space Ecosystem (PHASE 3). |
-| `COPERNICUS_STAC_URL` | `https://stac.dataspace.copernicus.eu/v1` | Endpoint STAC CDSE. |
-| `COPERNICUS_QUOTA_BYTES_LIMIT_MONTH` | (vide) | Quota mensuel Bytes CDSE. Source du `external_api_quota_limit{source="copernicus"}`. |
-| `IGN_API_KEY` | (vide) | Clé IGN Géoplateforme (gratuite avec inscription). |
-| `ENABLE_BLITZORTUNG` | `false` | Feature flag foudre — opt-in. |
+| `FIRMS_MAP_KEY` | (vide) | **Clé FIRMS unique** (32 caractères hex) — sert à la fois la CSV API et le Map Server. Obtenue immédiatement par e-mail depuis https://firms.modaps.eosdis.nasa.gov/api/map_key. **Quota : 5 000 transactions / 10 min** (compteur réinitialisé). Au plan d'ingestion PHASE 1 (15 min × 4 capteurs) ≈ 16 transac/h, très loin du plafond. **FIRMS peut renvoyer une erreur HTTP 200 avec un texte brut** : valider le contenu, pas seulement le statut. |
+| `OPEN_METEO_URL` | `https://api.open-meteo.com/v1` | Base URL Open-Meteo Forecast. **PHASE 1 = `meteofrance_arome_france_hd` seul.** Quotas : 10 000 / jour, 5 000 / heure, 600 / minute. Une requête sur > 10 variables ou plusieurs points compte pour plusieurs appels : **regrouper les 40-60 points de la grille en quelques requêtes multi-coordonnées**. |
+| `OPEN_METEO_ARCHIVE_URL` | `https://archive-api.open-meteo.com/v1/archive` | Base URL Open-Meteo Historical (PHASE 2). **Source ERA5 par défaut** pour l'init CFFWIS. CDS en repli si variables manquantes. |
+| `OPEN_METEO_AIR_URL` | `https://air-quality-api.open-meteo.com/v1` | Base URL Open-Meteo Air Quality (CAMS). |
+| `CDSE_CLIENT_ID` | (vide) | Identifiant OAuth client Copernicus Data Space (PHASE 3). Issu de User Settings → OAuth clients du tableau de bord CDSE. |
+| `CDSE_CLIENT_SECRET` | (vide) | Secret OAuth — **affiché une seule fois** à la création du client ; à stocker immédiatement. Si perdu, recréer un client. |
+| `CDSE_TOKEN_URL` | `https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token` | Endpoint token (grant `client_credentials`, refresh automatique, validité ≈ 1 h). |
+| `CDSE_BASE_URL` | `https://sh.dataspace.copernicus.eu` | Endpoint **Sentinel Hub Process API** propre à CDSE (≠ services.sentinel-hub.com commercial). Statistical API pour NDMI/NDVI par polygone. |
+| `CDSE_QUOTA_PU_LIMIT_MONTH` | (vide) | Limite mensuelle **Processing Units** CDSE, source de `external_api_quota_limit{source="copernicus"}`. Doc : documentation.dataspace.copernicus.eu/Quotas.html. |
+| `OPENAQ_API_KEY` | (vide) | Clé OpenAQ via `https://explore.openaq.org/register`. **Auth = en-tête `X-API-Key`**, **pas** Bearer, **pas** param URL. PHASE 4 à valider (couverture Gironde à mesurer avant). |
+| `ENABLE_BLITZORTUNG` | `false` | Feature flag foudre — **désactivé par défaut** (Blitzortung : pas d'API publique stable, conditions restrictives,rediffusion limitée). |
 | `LOG_LEVEL` | `INFO` | Logging structuré JSON. |
 
 Les secrets ne sont **jamais** commités : un `infra/.env.example` documente les noms.
