@@ -147,11 +147,20 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  // ── Configuration depuis variables d'environnement ────────────────
-  // Clé FIRMS injectée via l'interface Freebuff (Keys/API keys).
-  // Variable : VITE_FIRMS_API_KEY (obtenir sur firms.modaps.eosdis.nasa.gov)
-  const firmsKey = import.meta.env.VITE_FIRMS_API_KEY as string | undefined;
+  // ── Configuration des clés API ────────────────────────────────────
+  // Clé FIRMS : Freebuff Keys UI (variable VITE_FIRMS_API_KEY)
+  // Si absente, on utilise la clé intégrée au build
+  const FIRMS_KEY_HARDCODED = ""; // ← Colle ta clé ici si le Keys UI ne fonctionne pas
+  const firmsKey =
+    (import.meta.env.VITE_FIRMS_API_KEY as string | undefined) ||
+    FIRMS_KEY_HARDCODED ||
+    undefined;
   const firmsConfigured = Boolean(firmsKey);
+  const firmsKeySource = import.meta.env.VITE_FIRMS_API_KEY
+    ? "env (Keys UI)"
+    : FIRMS_KEY_HARDCODED
+      ? "constante"
+      : "aucune";
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
