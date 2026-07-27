@@ -1,166 +1,141 @@
 /**
- * PyroScope 33 — Dashboard (authenticated).
+ * PyroScope 33 — Dashboard.
  *
- * Données réelles uniquement :
- * - Open-Meteo API (sans clé) → météo, vent, température
- * - NASA FIRMS API (clé utilisateur) → hotspots satellite
- * - Fonds de carte OSM / IGN
- *
- * Zéro simulation, zéro donnée d'exemple, zéro badge « Backend requis ».
+ * Estimation risque feu temps réel : satellites (FIRMS) + météo (Open-Meteo).
+ * Zéro simulation, zéro donnée d'exemple.
  */
 
 import { useState, useEffect, useCallback } from "react";
-import type * as maplibregl from "maplibre-gl";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import MapContainer from "@/components/MapContainer";
 import HotspotLayer from "@/components/HotspotLayer";
 import type { HotspotData } from "@/components/HotspotLayer";
 import WindParticlesLayer from "@/components/WindParticlesLayer";
 import IsothermLayer from "@/components/IsothermLayer";
-import CrisisBanner from "@/components/CrisisBanner";
-import ZoneAlertPanel from "@/components/ZoneAlertPanel";
-import ExportPanel from "@/components/ExportPanel";
 import {
   Flame,
   LogOut,
   Thermometer,
   Wind,
   Layers,
-  Info,
-  SlidersHorizontal,
-  Bell,
-  Download,
-  PanelRightClose,
-  PanelRightOpen,
   RefreshCw,
   Satellite,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
-// ── Constantes Gironde ──────────────────────────────────────────────────
-
-// ── Points de grille météo (grille régulière ~10 km sur la Gironde) ────
-const WEATHER_POINTS = [
+// ── Grille météo Gironde (~10 km) ─────────────────────────────────────
+const GRID = [
   { lat: 44.3, lon: -1.2 }, { lat: 44.3, lon: -0.7 }, { lat: 44.3, lon: -0.2 },
   { lat: 44.7, lon: -1.2 }, { lat: 44.7, lon: -0.7 }, { lat: 44.7, lon: -0.2 },
   { lat: 45.1, lon: -1.2 }, { lat: 45.1, lon: -0.7 }, { lat: 45.1, lon: -0.2 },
   { lat: 45.4, lon: -1.0 }, { lat: 45.4, lon: -0.5 },
 ];
 
-interface LayerToggle {
-  id: string;
-  label: string;
-  icon: React.ElementType;
-  enabled: boolean;
+interface WeatherPoint {
+  lat: number; lon: number;
+  temp: number; humidity: number; precip: number;
+  wind_speed: number; wind_dir: number; wind_gusts: number;
 }
 
-interface WeatherData {
-  time: string;
-  temperature_2m: number;
-  relative_humidity_2m: number;
-  precipitation: number;
-  wind_speed_10m: number;
-  wind_direction_10m: number;
-  wind_gusts_10m: number;
+/** Calcule un indice de danger feu [0-100] depuis les données météo */
+function calcFireRisk(pts: WeatherPoint[]): number {
+  if (!pts.length) return 0;
+  const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const t = avg(pts.map((p) => p.temp));
+  const h = avg(pts.map((p) => p.humidity));
+  const w = avg(pts.map((p) => p.wind_speed));
+  const r = avg(pts.map((p) => p.precip));
+
+  // Température : > 25°C contribue au risque
+  const tScore = Math.min(100, Math.max(0, (t - 10) * 3.33));
+  // Humidité : < 40% contribue
+  const hScore = Math.min(100, Math.max(0, (60 - h) * 2.5));
+  // Vent : > 15 km/h accélère la propagation
+  const wScore = Math.min(100, Math.max(0, (w - 5) * 4));
+  // Précipitations récentes : > 0 réduit le risque
+  const rScore = r > 0 ? Math.max(0, 30 - r * 10) : 80;
+
+  const score = Math.round(tScore * 0.25 + hScore * 0.25 + wScore * 0.30 + rScore * 0.20);
+  return Math.min(100, Math.max(0, score));
 }
 
-interface WeatherGridPoint {
-  lat: number;
-  lon: number;
-  data: WeatherData | null;
+/** Couleur + classe selon le score */
+function riskLevel(score: number): { label: string; color: string; bg: string } {
+  if (score < 15) return { label: "Très faible", color: "text-green-600", bg: "bg-green-900/20 border-green-700/30" };
+  if (score < 35) return { label: "Faible", color: "text-yellow-600", bg: "bg-yellow-900/20 border-yellow-700/30" };
+  if (score < 55) return { label: "Modéré", color: "text-orange-500", bg: "bg-orange-900/20 border-orange-700/30" };
+  if (score < 75) return { label: "Élevé", color: "text-red-500", bg: "bg-red-900/20 border-red-700/30" };
+  return { label: "Très élevé", color: "text-red-300", bg: "bg-red-900/40 border-red-600/50" };
 }
 
-// ── Hooks API ──────────────────────────────────────────────────────────
+// ── API calls ──────────────────────────────────────────────────────────
 
-/** Récupère la météo Open-Meteo pour un point donné. */
-function fetchWeatherAt(lat: number, lon: number): Promise<WeatherData | null> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto`;
-  return fetch(url)
-    .then((r) => {
-      if (!r.ok) return null;
-      return r.json();
-    })
-    .then((json) => {
-      if (!json?.current) return null;
-      return {
-        time: json.current.time,
-        temperature_2m: json.current.temperature_2m,
-        relative_humidity_2m: json.current.relative_humidity_2m,
-        precipitation: json.current.precipitation ?? 0,
-        wind_speed_10m: json.current.wind_speed_10m,
-        wind_direction_10m: json.current.wind_direction_10m,
-        wind_gusts_10m: json.current.wind_gusts_10m,
-      };
-    })
-    .catch(() => null);
+async function fetchWeather(): Promise<WeatherPoint[]> {
+  const results = await Promise.all(
+    GRID.map(async (p) => {
+      try {
+        const r = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto`,
+        );
+        const j = await r.json();
+        if (!j?.current) return null;
+        return {
+          lat: p.lat, lon: p.lon,
+          temp: j.current.temperature_2m,
+          humidity: j.current.relative_humidity_2m,
+          precip: j.current.precipitation ?? 0,
+          wind_speed: j.current.wind_speed_10m,
+          wind_dir: j.current.wind_direction_10m,
+          wind_gusts: j.current.wind_gusts_10m,
+        };
+      } catch { return null; }
+    }),
+  );
+  return results.filter((x): x is WeatherPoint => x !== null);
 }
 
-/** Récupère les hotspots NASA FIRMS pour la Gironde. */
-function fetchFirmsHotspots(apiKey: string): Promise<HotspotData[]> {
+async function fetchFirms(apiKey: string): Promise<HotspotData[]> {
   const bbox = "-1.35,44.15,0.35,45.60";
-  // On essaie VIIRS SNPP + NOAA20
-  const urls = [
-    `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_SNPP_NRT/1/${bbox}`,
-    `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/1/${bbox}`,
-  ];
-
-  return Promise.all(
-    urls.map((url) =>
-      fetch(url)
-        .then((r) => (r.ok ? r.text() : ""))
-        .catch(() => ""),
-    ),
-  ).then(([csv1, csv2]) => {
-    const all: HotspotData[] = [];
-    for (const csv of [csv1, csv2]) {
-      if (!csv) continue;
-      const lines = csv.trim().split("\n");
-      if (lines.length < 2) continue;
-      const headers = lines[0].split(",").map((h) => h.trim());
-      for (let i = 1; i < lines.length; i++) {
-        const vals = lines[i].split(",").map((v) => v.trim());
-        const row: Record<string, string> = {};
-        headers.forEach((h, idx) => { row[h] = vals[idx]; });
-
-        const frp = parseFloat(row.frp ?? "0");
-        const lat = parseFloat(row.latitude ?? "0");
-        const lon = parseFloat(row.longitude ?? "0");
-        const confidence = row.confidence ?? "low";
-
-        // Vérifier bbox
-        if (lat < 44.15 || lat > 45.60 || lon < -1.35 || lon > 0.35) continue;
-
-        // Calculer l'âge en heures
-        const acqDate = row.acq_date ?? "";
-        const acqTimeRaw = row.acq_time ?? "0000";
-        const hh = parseInt(acqTimeRaw.substring(0, 2), 10) || 0;
-        const mm = parseInt(acqTimeRaw.substring(2, 4), 10) || 0;
-        const acqTimeNum = hh * 100 + mm;
-        const acqDateTime = new Date(acqDate + "T" + String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0") + ":00Z");
-        const ageHours = isNaN(acqDateTime.getTime()) ? 0 : (Date.now() - acqDateTime.getTime()) / 3600000;
-
-        all.push({
-          lat,
-          lon,
-          acq_date: acqDate,
-          acq_time: acqTimeNum,
-          satellite: row.satellite ?? "VIIRS",
-          confidence: (confidence === "n" ? "nominal" : confidence) as "low" | "nominal" | "high",
-          frp,
-          daynight: row.daynight ?? "D",
-          age_hours: Math.round(ageHours * 10) / 10,
-        });
-      }
+  const fetchCSV = (url: string) => fetch(url).then((r) => (r.ok ? r.text() : "")).catch(() => "");
+  const [csv1, csv2] = await Promise.all([
+    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_SNPP_NRT/1/${bbox}`),
+    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/1/${bbox}`),
+  ]);
+  const all: HotspotData[] = [];
+  for (const csv of [csv1, csv2]) {
+    if (!csv) continue;
+    const lines = csv.trim().split("\n");
+    if (lines.length < 2) continue;
+    const headers = lines[0].split(",").map((h) => h.trim());
+    for (let i = 1; i < lines.length; i++) {
+      const vals = lines[i].split(",").map((v) => v.trim());
+      const row: Record<string, string> = {};
+      headers.forEach((h, idx) => { row[h] = vals[idx]; });
+      const lat = parseFloat(row.latitude ?? "0");
+      const lon = parseFloat(row.longitude ?? "0");
+      if (lat < 44.15 || lat > 45.60 || lon < -1.35 || lon > 0.35) continue;
+      const frp = parseFloat(row.frp ?? "0");
+      const conf = row.confidence ?? "low";
+      const acqDate = row.acq_date ?? "";
+      const acqTime = row.acq_time ?? "0000";
+      const hh = parseInt(acqTime.substring(0, 2), 10) || 0;
+      const mm = parseInt(acqTime.substring(2, 4), 10) || 0;
+      const dt = new Date(acqDate + "T" + String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0") + ":00Z");
+      all.push({
+        lat, lon, frp,
+        confidence: conf === "n" ? "nominal" : conf,
+        satellite: row.satellite ?? "VIIRS",
+        acq_date: acqDate,
+        acq_time: hh * 100 + mm,
+        age_hours: isNaN(dt.getTime()) ? 0 : (Date.now() - dt.getTime()) / 3600000,
+        daynight: row.daynight ?? "D",
+      });
     }
-    // Trier par FRP décroissant
-    all.sort((a, b) => b.frp - a.frp);
-    return all;
-  });
+  }
+  all.sort((a, b) => b.frp - a.frp);
+  return all;
 }
 
 // ── Composant ──────────────────────────────────────────────────────────
@@ -169,149 +144,54 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  // ── Sources config ────────────────────────────────────────────────────
-  const [firmsApiKey] = useState(() => {
-    // L'utilisateur peut stocker sa clé FIRMS via l'interface Keys
-    // Valeur par défaut : tentative depuis env ou localStorage
-    return (import.meta as any).env?.VITE_FIRMS_API_KEY ?? localStorage.getItem("pyroscope_firms_key") ?? "";
-  });
-  const [firmsKeyInput, setFirmsKeyInput] = useState(firmsApiKey);
-
-  // ── Hotspots (FIRMS) ────────────────────────────────────────────────
+  // ── Données sources ────────────────────────────────────────────────
+  const [weather, setWeather] = useState<WeatherPoint[]>([]);
+  const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
-  const [hotspotsLoading, setHotspotsLoading] = useState(false);
-  const [hotspotsError, setHotspotsError] = useState<string | null>(null);
-  const [hotspotsLastUpdate, setHotspotsLastUpdate] = useState<string | null>(null);
+  const [firmsKey, setFirmsKey] = useState(
+    () => localStorage.getItem("pyroscope_firms_key") ?? "",
+  );
+  const [firmsInput, setFirmsInput] = useState(firmsKey);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const loadHotspots = useCallback(async (key: string) => {
-    if (!key) {
-      setHotspotsError("Clé API NASA FIRMS manquante — ajoutez-la dans les paramètres");
-      return;
-    }
-    setHotspotsLoading(true);
-    setHotspotsError(null);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await fetchFirmsHotspots(key);
-      setHotspots(data);
-      setHotspotsLastUpdate(new Date().toISOString());
-      if (data.length === 0) {
-        setHotspotsError("Aucun point chaud détecté sur la Gironde dans les dernières 24h");
-      }
-    } catch {
-      setHotspotsError("Erreur de chargement NASA FIRMS");
-    } finally {
-      setHotspotsLoading(false);
-    }
-  }, []);
+      const [w, h] = await Promise.all([
+        fetchWeather(),
+        firmsKey ? fetchFirms(firmsKey).catch(() => []) : Promise.resolve([]),
+      ]);
+      setWeather(w);
+      setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
+      if (h.length) setHotspots(h);
+      if (!w.length) setError("Météo : aucun point de grille disponible");
+    } catch { setError("Erreur de chargement des données"); }
+    finally { setLoading(false); }
+  }, [firmsKey]);
 
-  // ── Weather grid (Open-Meteo) ───────────────────────────────────────
-  const [weatherGrid, setWeatherGrid] = useState<WeatherGridPoint[]>([]);
-  const [weatherLoading, setWeatherLoading] = useState(false);
-  const [weatherError, setWeatherError] = useState<string | null>(null);
-  const [weatherLastUpdate, setWeatherLastUpdate] = useState<string | null>(null);
+  useEffect(() => { load(); }, [load]);
 
-  const loadWeather = useCallback(async () => {
-    setWeatherLoading(true);
-    setWeatherError(null);
-    try {
-      const results = await Promise.all(
-        WEATHER_POINTS.map((p) => fetchWeatherAt(p.lat, p.lon)),
-      );
-      setWeatherGrid(
-        WEATHER_POINTS.map((p, i) => ({ ...p, data: results[i] })),
-      );
-      setWeatherLastUpdate(new Date().toISOString());
-    } catch {
-      setWeatherError("Erreur de chargement Open-Meteo");
-    } finally {
-      setWeatherLoading(false);
-    }
-  }, []);
+  // ── Risque calculé ────────────────────────────────────────────────
+  const riskScore = calcFireRisk(weather);
+  const risk = riskLevel(riskScore);
+  const avgTemp = weather.length ? Math.round(weather.reduce((s, p) => s + p.temp, 0) / weather.length * 10) / 10 : 0;
+  const avgWind = weather.length ? Math.round(weather.reduce((s, p) => s + p.wind_speed, 0) / weather.length * 10) / 10 : 0;
+  const avgHum = weather.length ? Math.round(weather.reduce((s, p) => s + p.humidity, 0) / weather.length) : 0;
 
-  // ── Premiers chargements ────────────────────────────────────────────
-  useEffect(() => {
-    loadWeather();
-    if (firmsApiKey) loadHotspots(firmsApiKey);
-  }, []);
+  // ── Couches ───────────────────────────────────────────────────────
+  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true });
+  const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
 
-  // ── Filtres ────────────────────────────────────────────────────────
-  const [periodHours, setPeriodHours] = useState(48);
-  const [minConfidence, setMinConfidence] = useState<"low" | "nominal" | "high">("low");
-  const [minFrp, setMinFrp] = useState(0);
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [selectedCell] = useState<{ lat: number; lon: number } | null>(null);
+  const windGrid = weather.map((p) => ({
+    lon: p.lon, lat: p.lat,
+    u: -(p.wind_speed * Math.sin((p.wind_dir * Math.PI) / 180)),
+    v: -(p.wind_speed * Math.cos((p.wind_dir * Math.PI) / 180)),
+  }));
 
-  // ── Crisis ──────────────────────────────────────────────────────────
-  const [crisisConfig] = useState({
-    active: false,
-    activated_at: null as string | null,
-    degraded_layers: ["simulation", "ellipses", "alerts"] as string[],
-    notification_blocked: false,
-  });
-
-  // ── Alertes ─────────────────────────────────────────────────────────
-  const [alertsOpen, setAlertsOpen] = useState(false);
-  const [watchedCells] = useState<Array<{
-    id: string; lat: number; lon: number; label: string;
-    thresholdIgnition: number; thresholdSpread: number; thresholdFWI: number;
-    pushEnabled: boolean; lastAlert: string | null; triggered: boolean;
-  }>>([]);
-
-  // ── UI ──────────────────────────────────────────────────────────────
-  const [exportOpen, setExportOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-
-  const [layers, setLayers] = useState<LayerToggle[]>([
-    { id: "hotspots", label: "Points chauds satellite", icon: Satellite, enabled: true },
-    { id: "temperature", label: "Température", icon: Thermometer, enabled: true },
-    { id: "wind", label: "Vent animé", icon: Wind, enabled: true },
-  ]);
-
-  const toggleLayer = (id: string) => {
-    setLayers((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, enabled: !l.enabled } : l)),
-    );
-  };
-
-  // ── Hotspots filtrés ──────────────────────────────────────────────
-  const filteredHotspots = hotspots.filter((h) => {
-    if (minConfidence === "high" && h.confidence !== "high") return false;
-    if (minConfidence === "nominal" && h.confidence === "low") return false;
-    if (h.frp < minFrp) return false;
-    return true;
-  });
-
-  // ── Données vent pour les particules ──────────────────────────────
-  const windData = weatherGrid
-    .filter((p) => p.data)
-    .map((p) => ({
-      lat: p.lat,
-      lon: p.lon,
-      wind_u: -(p.data!.wind_speed_10m * Math.sin((p.data!.wind_direction_10m * Math.PI) / 180)),
-      wind_v: -(p.data!.wind_speed_10m * Math.cos((p.data!.wind_direction_10m * Math.PI) / 180)),
-      speed: p.data!.wind_speed_10m,
-    }));
-
-  // ── Température moyenne ───────────────────────────────────────────
-  const avgTemp = weatherGrid
-    .filter((p) => p.data)
-    .reduce((sum, p) => sum + p.data!.temperature_2m, 0) /
-    (weatherGrid.filter((p) => p.data).length || 1);
-
-  const hotspotCount = filteredHotspots.length;
-  const hotspotLayerEnabled = layers.find((l) => l.id === "hotspots")?.enabled ?? false;
-  const tempLayerEnabled = layers.find((l) => l.id === "temperature")?.enabled ?? false;
-  const windLayerEnabled = layers.find((l) => l.id === "wind")?.enabled ?? false;
-
-  const handleSaveFirmsKey = () => {
-    localStorage.setItem("pyroscope_firms_key", firmsKeyInput);
-    loadHotspots(firmsKeyInput);
-  };
-
-  const handleSignOut = async () => {
-    await signOut();
-    navigate("/");
-  };
+  const hotspotsOk = hotspots.length > 0;
+  const weatherOk = weather.length > 0;
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -319,328 +199,151 @@ export default function Dashboard() {
       <header className="sticky top-0 z-40 border-b border-border/50 bg-background/90 px-4 py-2 backdrop-blur-sm">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="lg:hidden text-muted-foreground -ml-1"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              aria-label={sidebarOpen ? "Fermer" : "Ouvrir"}
-            >
-              {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-            </Button>
             <Flame className="h-5 w-5 text-fire-500" />
-            <span className="text-sm font-semibold tracking-tight">
-              PyroScope<span className="text-fire-500">33</span>
-            </span>
+            <span className="text-sm font-semibold">PyroScope<span className="text-fire-500">33</span></span>
           </div>
           <div className="flex items-center gap-3">
-            {/* Statut sources */}
-            <div className="hidden items-center gap-2 md:flex">
-              <div className={`h-2 w-2 rounded-full ${hotspots.length > 0 ? "bg-green-500" : hotspotsError ? "bg-red-500" : "bg-amber-500"}`} />
-              <span className="text-xs text-muted-foreground">
-                {hotspots.length > 0 ? `${hotspotCount} hotspots` : hotspotsError ? "FIRMS erreur" : "… FIRMS"}
-              </span>
-              <div className={`h-2 w-2 rounded-full ${weatherGrid.some((p) => p.data) ? "bg-green-500" : weatherError ? "bg-red-500" : "bg-amber-500"}`} />
-              <span className="text-xs text-muted-foreground">
-                {weatherGrid.some((p) => p.data) ? `${avgTemp.toFixed(1)}°C` : weatherError ? "Météo erreur" : "… Météo"}
-              </span>
-            </div>
-            <span className="hidden sm:inline text-xs text-muted-foreground">
-              {user?.email ?? "Invité"}
+            <span className="hidden md:inline text-xs text-muted-foreground">
+              {user?.email}
             </span>
-            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={handleSignOut}>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={async () => { await signOut(); navigate("/"); }}>
               <LogOut className="h-3.5 w-3.5" />
             </Button>
           </div>
         </div>
       </header>
 
-      {/* ── Mobile overlay ─────────────────────────────────────── */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
-      )}
-
-      {/* ── Layout principal ───────────────────────────────────── */}
       <div className="flex flex-1 flex-col lg:flex-row">
         {/* ── Carte ───────────────────────────────────────────── */}
-
         <main className="relative flex flex-1 flex-col">
           <MapContainer>
-            <HotspotLayer
-              map={null as unknown as maplibregl.Map}
-              hotspots={filteredHotspots}
-              visible={hotspotLayerEnabled}
-            />
-            <IsothermLayer
-              map={null as unknown as maplibregl.Map}
-              data={{
-                grid: weatherGrid
-                  .filter((p) => p.data)
-                  .map((p) => ({
-                    lon: p.lon,
-                    lat: p.lat,
-                    temperature: p.data!.temperature_2m,
-                  })),
-              }}
-              visible={tempLayerEnabled}
-            />
-            <WindParticlesLayer
-              map={null as unknown as maplibregl.Map}
-              windData={{
-                grid: windData.map((w) => ({
-                  lon: w.lon,
-                  lat: w.lat,
-                  u: w.wind_u,
-                  v: w.wind_v,
-                })),
-              }}
-              visible={windLayerEnabled}
-            />
+            <HotspotLayer map={null as unknown as any} hotspots={hotspots} visible={layers.hotspots} />
+            <IsothermLayer map={null as unknown as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
+            <WindParticlesLayer map={null as unknown as any} windData={{ grid: windGrid }} visible={layers.wind} />
           </MapContainer>
 
-          {/* ── Refresh overlay ───────────────────────────────── */}
-          <div className="absolute left-3 top-3 z-20 flex flex-wrap gap-1">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="h-7 bg-background/90 px-2 text-[10px] backdrop-blur-sm"
-              onClick={() => { loadWeather(); if (firmsApiKey) loadHotspots(firmsApiKey); }}
-              disabled={weatherLoading || hotspotsLoading}
-            >
-              <RefreshCw className={`mr-1 h-3 w-3 ${weatherLoading || hotspotsLoading ? "animate-spin" : ""}`} />
-              Actualiser
-            </Button>
-          </div>
-
-          {/* ── Filtres ───────────────────────────────────────── */}
-          <div className="absolute right-3 top-3 z-20">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="gap-2 bg-background/90 backdrop-blur-sm shadow-sm"
-              onClick={() => setFilterOpen(!filterOpen)}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span className="text-xs hidden sm:inline">Filtres</span>
-            </Button>
-          </div>
-
-          {filterOpen && (
-            <div className="absolute right-3 top-12 z-20 w-64 rounded-lg border border-border/50 bg-background/95 p-4 shadow-lg backdrop-blur-sm">
-              <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Filtres hotspots
-              </h4>
-              <div className="mb-3">
-                <Label className="text-xs text-muted-foreground">
-                  Période : {periodHours}h
-                </Label>
-                <div className="mt-1 flex gap-1">
-                  {[24, 48, 168].map((h) => (
-                    <Button
-                      key={h}
-                      variant={periodHours === h ? "default" : "outline"}
-                      size="sm"
-                      className="h-7 flex-1 text-xs"
-                      onClick={() => setPeriodHours(h)}
-                    >
-                      {h === 24 ? "24h" : h === 48 ? "48h" : "7j"}
-                    </Button>
-                  ))}
-                </div>
+          {/* ── Overlay risque ───────────────────────────────── */}
+          <div className="absolute left-3 top-3 z-20 flex flex-col gap-2">
+            <div className={`rounded-lg border px-3 py-2 backdrop-blur-sm ${risk.bg}`}>
+              <div className="flex items-center gap-2">
+                <Flame className={`h-4 w-4 ${risk.color}`} />
+                <span className={`text-xs font-bold ${risk.color}`}>{risk.label}</span>
               </div>
-              <div className="mb-3">
-                <Label className="text-xs text-muted-foreground">Confiance min.</Label>
-                <div className="mt-1 flex gap-1">
-                  {(["low", "nominal", "high"] as const).map((c) => (
-                    <Button
-                      key={c}
-                      variant={minConfidence === c ? "default" : "outline"}
-                      size="sm"
-                      className="h-7 flex-1 text-xs"
-                      onClick={() => setMinConfidence(c)}
-                    >
-                      {c === "low" ? "Toute" : c === "nominal" ? "Moyenne" : "Haute"}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-              <div className="mb-2">
-                <Label className="text-xs text-muted-foreground">FRP min : {minFrp} MW</Label>
-                <Slider value={[minFrp]} onValueChange={([v]) => setMinFrp(v)} min={0} max={100} step={1} className="mt-1" />
+              <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-white/20">
+                <div className="h-full rounded-full bg-fire-500 transition-all" style={{ width: `${riskScore}%` }} />
               </div>
             </div>
-          )}
-
-          {/* Infos coordonnées */}
-          <div className="absolute bottom-3 left-3 z-20 rounded border border-border/50 bg-background/80 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm">
-            Gironde · © OpenStreetMap contributeurs
+            <Button variant="secondary" size="sm" className="h-7 bg-background/80 px-2 text-[10px] backdrop-blur-sm" onClick={load} disabled={loading}>
+              <RefreshCw className={`mr-1 h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+              {loading ? "…" : "Actualiser"}
+            </Button>
           </div>
 
-          {/* Compteur hotspots */}
+          {/* Footer carte */}
+          <div className="absolute bottom-3 left-3 z-20 rounded border border-border/40 bg-background/70 px-2 py-1 text-[9px] text-muted-foreground backdrop-blur-sm">
+            Gironde · © OSM contributeurs · Open-Meteo · NASA FIRMS
+          </div>
           <div className="absolute bottom-3 right-3 z-20 flex gap-2">
-            <div className="rounded border border-border/50 bg-background/80 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm">
-              {hotspotCount > 0
-                ? `${hotspotCount} détection${hotspotCount > 1 ? "s" : ""} satellite`
-                : hotspotsLoading
-                  ? "Chargement FIRMS…"
-                  : "Aucune détection"}
+            <div className="rounded border border-border/40 bg-background/70 px-2 py-1 text-[9px] text-muted-foreground backdrop-blur-sm">
+              {hotspotsOk ? `${hotspots.length} hotspot${hotspots.length > 1 ? "s" : ""}` : "Aucune détection"}
+            </div>
+            <div className={`rounded border px-2 py-1 text-[9px] backdrop-blur-sm ${risk.bg}`}>
+              <span className={risk.color}>Risque {riskScore}/100</span>
             </div>
           </div>
         </main>
 
-        {/* ── Sidebar ───────────────────────────────────────────── */}
-        <aside className={`flex w-full flex-col border-t border-border/50 bg-card/30 transition-all duration-200 ease-in-out
-            ${sidebarOpen ? "max-h-[50vh] lg:max-h-none" : "max-h-0 overflow-hidden border-t-0 lg:max-h-none"}
-            lg:w-72 lg:border-l lg:border-t-0`}>
-          <div className="flex-1 overflow-y-auto p-4">
+        {/* ── Sidebar ─────────────────────────────────────────── */}
+        <aside className="w-full border-t border-border/50 bg-card/30 lg:w-64 lg:border-l lg:border-t-0">
+          <div className="overflow-y-auto p-3 space-y-3">
 
-            {/* ── Couches ──────────────────────────────────────── */}
-            <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              <Layers className="h-3.5 w-3.5" />
-              Couches
-            </h3>
-            <div className="space-y-1">
-              {layers.map((layer) => (
-                <div key={layer.id} className="flex items-center gap-3 rounded-md px-3 py-2 transition-colors hover:bg-accent/50">
-                  <Switch
-                    checked={layer.enabled}
-                    onCheckedChange={() => toggleLayer(layer.id)}
-                    className="data-[state=checked]:bg-fire-600"
-                  />
-                  <layer.icon className={`h-4 w-4 ${layer.enabled ? "text-fire-500" : "text-muted-foreground/50"}`} />
-                  <p className="text-sm">{layer.label}</p>
-                </div>
-              ))}
-            </div>
-
-            <Separator className="my-4 bg-border/50" />
-
-            {/* ── Infos données ───────────────────────────────── */}
-            <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              <Info className="h-3.5 w-3.5" />
-              Données en direct
-            </h3>
-
-            {/* NASA FIRMS */}
-            <div className="mb-3 rounded-md border border-border/50 bg-card p-3">
-              <p className="text-xs font-medium flex items-center gap-1.5">
-                <Satellite className="h-3.5 w-3.5 text-fire-500" />
-                NASA FIRMS
-              </p>
-              <div className="mt-1.5 space-y-1 text-[10px] text-muted-foreground">
-                <div className="flex justify-between">
-                  <span>Détections</span>
-                  <span className="font-medium">{hotspots.length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Dernière mise à jour</span>
-                  <span>{hotspotsLastUpdate ? new Date(hotspotsLastUpdate).toLocaleTimeString("fr-FR") : "—"}</span>
-                </div>
-                {hotspotsError && (
-                  <p className="mt-1 text-[9px] text-red-500">{hotspotsError}</p>
-                )}
+            {/* Couches */}
+            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Layers className="h-3 w-3" /> Couches
+            </h4>
+            {(["hotspots", "temperature", "wind"] as const).map((k) => (
+              <div key={k} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-accent/30">
+                <Switch checked={layers[k]} onCheckedChange={() => toggle(k)} className="h-4 w-7 data-[state=checked]:bg-fire-600" />
+                <span className="text-xs text-muted-foreground">
+                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : "Vent animé"}
+                </span>
               </div>
+            ))}
+
+            <hr className="border-border/40" />
+
+            {/* Risque */}
+            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Flame className="h-3 w-3 text-fire-500" /> Risque feu temps réel
+            </h4>
+            <div className={`rounded-lg border p-3 ${risk.bg}`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-lg font-bold ${risk.color}`}>{riskScore}</span>
+                <span className={`text-[10px] font-medium ${risk.color}`}>/ 100</span>
+              </div>
+              <p className={`text-xs font-semibold ${risk.color}`}>{risk.label}</p>
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+                <div className="h-full rounded-full bg-fire-500 transition-all" style={{ width: `${riskScore}%` }} />
+              </div>
+              <p className="mt-1 text-[9px] text-muted-foreground/50">
+                Basé sur T={avgTemp}°C · HR={avgHum}% · Vent={avgWind} km/h · {hotspotsOk ? `${hotspots.length} détections` : "pas de détection"}
+              </p>
             </div>
 
-            {/* Open-Meteo */}
-            <div className="mb-3 rounded-md border border-border/50 bg-card p-3">
-              <p className="text-xs font-medium flex items-center gap-1.5">
-                <Wind className="h-3.5 w-3.5 text-blue-500" />
-                Open-Meteo (AROME HD)
+            {/* Hotspots */}
+            <div className="rounded border border-border/40 p-2.5">
+              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                <Satellite className="h-3 w-3 text-fire-500" /> NASA FIRMS
               </p>
-              <div className="mt-1.5 space-y-1 text-[10px] text-muted-foreground">
-                <div className="flex justify-between">
-                  <span>Température</span>
-                  <span className="font-medium">{avgTemp.toFixed(1)}°C</span>
+              <p className="text-[10px] text-muted-foreground/60">
+                {hotspotsOk ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite` : "Aucune détection"}
+              </p>
+              {hotspotsOk && (
+                <div className="mt-1 text-[9px] text-muted-foreground/40">
+                  FRP max : {Math.max(...hotspots.map((h) => h.frp)).toFixed(1)} MW · Dernier : {hotspots[0].acq_date}
                 </div>
-                <div className="flex justify-between">
-                  <span>Points de grille</span>
-                  <span className="font-medium">{weatherGrid.filter((p) => p.data).length}/{WEATHER_POINTS.length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Mise à jour</span>
-                  <span>{weatherLastUpdate ? new Date(weatherLastUpdate).toLocaleTimeString("fr-FR") : "—"}</span>
-                </div>
-                {weatherError && <p className="mt-1 text-[9px] text-red-500">{weatherError}</p>}
-              </div>
+              )}
             </div>
+
+            {/* Météo */}
+            <div className="rounded border border-border/40 p-2.5">
+              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                <Thermometer className="h-3 w-3" /> Open-Meteo (AROME HD)
+              </p>
+              <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">
+                <span>🌡 {avgTemp}°C</span>
+                <span>💧 {avgHum}%</span>
+                <span>💨 {avgWind} km/h</span>
+                <span>🌧 {weather.length ? weather[0].precip.toFixed(1) : "-"} mm</span>
+              </div>
+              <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {weatherTime}</p>
+            </div>
+
+            {/* Erreur */}
+            {error && <p className="text-[10px] text-red-500">{error}</p>}
 
             {/* Clé FIRMS */}
-            <div className="mb-3 rounded-md border border-border/50 bg-card p-3">
-              <p className="text-xs font-medium mb-1.5">🔑 Clé API NASA FIRMS</p>
+            <div className="rounded border border-border/40 p-2.5">
+              <p className="text-[10px] font-medium text-muted-foreground mb-1">🔑 Clé NASA FIRMS</p>
               <div className="flex gap-1">
-                <input
-                  type="text"
-                  value={firmsKeyInput}
-                  onChange={(e) => setFirmsKeyInput(e.target.value)}
-                  placeholder="Saisir la clé FIRMS…"
-                  className="flex-1 rounded border border-border/50 bg-background px-2 py-1 text-[10px]"
-                />
-                <Button variant="default" size="sm" className="h-7 text-[10px]" onClick={handleSaveFirmsKey}>
+                <input type="text" value={firmsInput} onChange={(e) => setFirmsInput(e.target.value)}
+                  placeholder="Clé API…" className="flex-1 rounded border border-border/40 bg-background px-2 py-1 text-[10px]" />
+                <Button variant="default" size="sm" className="h-7 text-[10px]"
+                  onClick={() => { setFirmsKey(firmsInput); localStorage.setItem("pyroscope_firms_key", firmsInput); }}>
                   OK
                 </Button>
               </div>
-              <p className="mt-1 text-[9px] text-muted-foreground/50">
-                Clé gratuite via <a href="https://firms.modaps.eosdis.nasa.gov" target="_blank" rel="noopener noreferrer" className="underline">firms.modaps.eosdis.nasa.gov</a>
-              </p>
+              <a href="https://firms.modaps.eosdis.nasa.gov" target="_blank" rel="noopener noreferrer"
+                className="mt-1 block text-[9px] text-blue-500 underline">Obtenir une clé gratuite</a>
             </div>
 
-            <Separator className="my-4 bg-border/50" />
-
-            {/* ── Alertes ──────────────────────────────────────── */}
-            <div className="mb-3">
-              <Button
-                variant="ghost" size="sm"
-                className={`w-full justify-start gap-2 text-xs ${alertsOpen ? "bg-accent/30" : "text-muted-foreground"}`}
-                onClick={() => setAlertsOpen(!alertsOpen)}
-              >
-                <Bell className="h-3.5 w-3.5" />
-                <span>Alertes seuil</span>
-              </Button>
-              {alertsOpen && (
-                <div className="mt-2">
-                  <ZoneAlertPanel
-                    watchedCells={watchedCells}
-                    currentLat={selectedCell?.lat}
-                    currentLon={selectedCell?.lon}
-                    onAddCell={() => {}}
-                    onRemoveCell={() => {}}
-                    onUpdateThreshold={() => {}}
-                    onTogglePush={() => {}}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* ── Crise ────────────────────────────────────────── */}
-            <div className="mb-3">
-              <CrisisBanner config={crisisConfig} onToggle={() => {}} />
-            </div>
-
-            <Separator className="my-4 bg-border/50" />
-
-            {/* ── Export ──────────────────────────────────────── */}
-            <div className="mb-3">
-              <Button
-                variant="ghost" size="sm"
-                className={`w-full justify-start gap-2 text-xs ${exportOpen ? "bg-accent/30" : "text-muted-foreground"}`}
-                onClick={() => setExportOpen(!exportOpen)}
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span>Exporter</span>
-              </Button>
-              {exportOpen && (
-                <div className="mt-2 rounded-md border border-border/50 bg-card p-3">
-                  <ExportPanel onClose={() => setExportOpen(false)} />
-                </div>
-              )}
-            </div>
-
-            <Separator className="my-4 bg-border/50" />
-
-            {/* Attributions */}
-            <p className="text-[9px] leading-relaxed text-muted-foreground/40">
-              NASA FIRMS · Open-Meteo (CC BY 4.0) · IGN · OpenStreetMap © contributeurs (ODbL)
+            {/* Légende */}
+            <hr className="border-border/40" />
+            <p className="text-[8px] leading-relaxed text-muted-foreground/30">
+              ⚠️ Estimation basée sur données Open-Meteo et NASA FIRMS.
+              Sans valeur opérationnelle. En cas d'incendie : 18/112.
+              Sources : SDIS 33 · Préfecture · Météo-France.
+              NASA FIRMS · Open-Meteo (CC BY 4.0) · IGN · © OSM contributeurs (ODbL)
             </p>
           </div>
         </aside>
