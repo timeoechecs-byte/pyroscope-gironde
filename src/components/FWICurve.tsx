@@ -19,7 +19,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
-  Area,
 } from "recharts";
 
 interface FWIDataPoint {
@@ -56,7 +55,8 @@ function getEffisColor(fwi: number): string {
   return "#450a0a";
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const CustomTooltip = ({ active, payload, label }: Record<string, any>) => {
   if (!active || !payload?.length) return null;
   const data = payload[0]?.payload;
   if (!data) return null;

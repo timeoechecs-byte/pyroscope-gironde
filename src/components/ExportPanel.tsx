@@ -15,8 +15,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
   Download,
@@ -26,7 +24,6 @@ import {
   Map,
   Flame,
   Thermometer,
-  Wind,
   TreePine,
 } from "lucide-react";
 
@@ -79,7 +76,6 @@ export default function ExportPanel({ onClose }: ExportPanelProps) {
   const [error, setError] = useState<string | null>(null);
 
   const selectedLayerData = LAYERS.find((l) => l.id === selectedLayer);
-  const LayerIcon = selectedLayerData?.icon ?? Map;
 
   const handleExport = () => {
     setIsExporting(true);
@@ -252,7 +248,8 @@ function generateSampleData(layer: string, format: string): string {
   return warning + csvLines.join("\n");
 }
 
-function getSampleGeoJSON(layer: string): any {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSampleGeoJSON(layer: string): Record<string, any> {
   const features = [];
   const coords = [
     [-0.65, 44.85],
@@ -340,7 +337,8 @@ function getSampleGeoJSON(layer: string): any {
   };
 }
 
-function getSampleRows(layer: string): Record<string, any>[] {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSampleRows(layer: string): Record<string, string | number>[] {
   if (layer === "risk") {
     return [
       { cell_id: 1, latitude: 44.85, longitude: -0.65, ignition_risk: 35, spread_risk: 72, risk_class: "élevé" },

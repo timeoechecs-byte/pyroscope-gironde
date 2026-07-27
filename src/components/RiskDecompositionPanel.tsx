@@ -34,7 +34,7 @@ interface RiskDetail {
     n_available_factors: number; n_total_factors: number; renormalized: boolean;
   };
   contributions: Contribution[];
-  quality: Record<string, any>;
+  quality: Record<string, boolean | number | string>;
 }
 
 interface RiskDecompositionPanelProps {
@@ -50,7 +50,7 @@ function scoreBadgeColor(score: number): string {
   return "bg-red-900 text-white";
 }
 
-function Bar({ label, value, pct, color }: { label: string; value: number; pct: number; color: string }) {
+function Bar({ label, pct, color }: { label: string; pct: number; color: string }) {
   return (
     <div className="mb-1.5">
       <div className="mb-0.5 flex justify-between text-[10px]">
@@ -144,7 +144,6 @@ export default function RiskDecompositionPanel({
               <Bar
                 key={i}
                 label={c.name}
-                value={c.contribution}
                 pct={c.pct}
                 color={
                   c.name.startsWith("ignition")

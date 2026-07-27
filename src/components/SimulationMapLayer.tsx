@@ -7,7 +7,7 @@
  * - Mise à jour réactive au curseur temporel
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import * as maplibregl from "maplibre-gl";
 
 interface SimCell {
@@ -36,8 +36,6 @@ export default function SimulationMapLayer({
   const ignitionLayerId = "sim-ignition-layer";
   const burnSourceId = "sim-burn-source";
   const burnLayerId = "sim-burn-layer";
-  const animRef = useRef<number>(0);
-
   // ── Ignition marker ────────────────────────────────────────────
   useEffect(() => {
     if (!map || !visible) return;

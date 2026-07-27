@@ -6,7 +6,7 @@
  * Panneau latéral : info cellule + état des sources.
  */
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -15,10 +15,6 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import MapContainer from "@/components/MapContainer";
-import HotspotLayer from "@/components/HotspotLayer";
-import type { HotspotData } from "@/components/HotspotLayer";
-import WindParticlesLayer from "@/components/WindParticlesLayer";
-import IsothermLayer from "@/components/IsothermLayer";
 import RiskLayer from "@/components/RiskLayer";
 import SpreadEllipseLayer from "@/components/SpreadEllipseLayer";
 import RiskDecompositionPanel from "@/components/RiskDecompositionPanel";
@@ -29,8 +25,6 @@ import ZoneAlertPanel from "@/components/ZoneAlertPanel";
 import ExportPanel from "@/components/ExportPanel";
 import {
   AlertTriangle,
-  Eye,
-  EyeOff,
   Flame,
   LogOut,
   Settings2,
@@ -40,20 +34,13 @@ import {
   Info,
   SlidersHorizontal,
   ArrowRightLeft,
-  Grip,
   Play,
-  ShieldOff,
   Bell,
   Download,
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
 import { useNavigate } from "react-router";
-
-// ── Simulation data — strictly for frontend development preview
-// These are NOT real hotspots, just layout verification.
-// In production (backend connected), this will be replaced by real API data.
-const SAMPLE_HOTSPOTS: HotspotData[] = [];
 
 // ── Layer toggles ────────────────────────────────────────────────────────
 interface LayerToggle {
@@ -81,6 +68,19 @@ interface EllipseData {
 
 interface Contribution {
   name: string; value: number; contribution: number; pct: number;
+}
+
+interface SimulationResultData {
+  ignition_lat: number;
+  ignition_lon: number;
+  start_time: string;
+  duration_h: number;
+  n_burned_cells: number;
+  total_area_ha: number;
+  max_ros_m_min: number;
+  fire_type: string;
+  epochs: Array<{ hour: number; n_cells_burned: number; area_ha: number; mean_ros: number; max_ros: number }>;
+  burned_cells: Array<{ cell_id: number; lat: number; lon: number; burn_time_min: number }>;
 }
 
 interface RiskDetail {
@@ -143,7 +143,7 @@ export default function Dashboard() {
   // ── Simulation state ────────────────────────────────────────────────
   const [simMode, setSimMode] = useState(false);
   const [ignitionPoint, setIgnitionPoint] = useState<{ lat: number; lon: number } | null>(null);
-  const [simResult, setSimResult] = useState<any>(null);
+  const [simResult, setSimResult] = useState<SimulationResultData | null>(null);
   const [simIsRunning, setSimIsRunning] = useState(false);
   const [simCurrentTime, setSimCurrentTime] = useState(0);
 
@@ -185,10 +185,6 @@ export default function Dashboard() {
 
   const riskLayerEnabled = layers.find((l) => l.id === "risk")?.enabled ?? false;
   const ellipseLayerEnabled = layers.find((l) => l.id === "ellipses")?.enabled ?? false;
-
-  const handleMapClick = useCallback((lat: number, lon: number) => {
-    setSelectedCell({ lat, lon });
-  }, []);
 
   const handleRiskCellClick = (cell: RiskCellData) => {
     // Build a full RiskDetail from demo data

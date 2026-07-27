@@ -11,7 +11,7 @@
 import { useEffect } from "react";
 import * as maplibregl from "maplibre-gl";
 
-interface RiskCellData {
+export interface RiskCellData {
   cell_id: number;
   lat: number;
   lon: number;
@@ -173,7 +173,7 @@ export default function RiskLayer({
       if (map.getLayer(layerId)) map.removeLayer(layerId);
       if (map.getSource(sourceId)) map.removeSource(sourceId);
     };
-  }, [map, cells, mode, visible]);
+  }, [map, cells, mode, visible, sourceId, layerId, onCellClick]);
 
   return null;
 }

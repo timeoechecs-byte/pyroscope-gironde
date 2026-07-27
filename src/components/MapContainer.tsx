@@ -27,17 +27,17 @@ export interface MapContainerHandle {
 
 interface MapContainerProps {
   children?: React.ReactNode;
-  interactive?: boolean;
 }
 
 export default function MapContainer({
   children,
-  interactive = true,
 }: MapContainerProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const [mapLoaded, setMapLoaded] = useState(false);
-  const [mapError, setMapError] = useState(false);
+  const [mapState, setMapState] = useState<{
+    loaded: boolean;
+    error: boolean;
+  }>({ loaded: false, error: false });
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -61,15 +61,15 @@ export default function MapContainer({
       map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
       map.on("load", () => {
-        setMapLoaded(true);
+        setMapState({ loaded: true, error: false });
         mapRef.current = map;
       });
 
       map.on("error", () => {
-        setMapError(true);
+        setMapState({ loaded: false, error: true });
       });
     } catch {
-      setMapError(true);
+      setMapState({ loaded: false, error: true });
     }
 
     return () => {
@@ -78,7 +78,7 @@ export default function MapContainer({
     };
   }, []);
 
-  if (mapError) {
+  if (mapState.error) {
     return (
       <div className="flex h-full items-center justify-center bg-[#0a120a] text-[#607060]">
         <div className="text-center">
@@ -91,7 +91,7 @@ export default function MapContainer({
 
   return (
     <div ref={mapContainer} className="relative h-full w-full">
-      {mapLoaded && children}
+      {mapState.loaded && children}
     </div>
   );
 }

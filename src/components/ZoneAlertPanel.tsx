@@ -16,7 +16,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -62,20 +61,11 @@ export default function ZoneAlertPanel({
   watchedCells,
   currentLat,
   currentLon,
-  onAddCell,
   onRemoveCell,
   onUpdateThreshold,
   onTogglePush,
 }: ZoneAlertPanelProps) {
   const [showAddForm, setShowAddForm] = useState(false);
-  const [addLabel, setAddLabel] = useState("");
-
-  const handleAdd = () => {
-    if (currentLat !== undefined && currentLon !== undefined) {
-      onAddCell(currentLat, currentLon);
-      setShowAddForm(false);
-    }
-  };
 
   return (
     <div className="space-y-3">

@@ -11,7 +11,7 @@
  * ⚠️ Encart d'avertissement permanent et non masquable.
  */
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
@@ -21,9 +21,7 @@ import {
   Square,
   Clock,
   MapPin,
-  AlertTriangle,
   Flame,
-  Grip,
 } from "lucide-react";
 
 interface SimulationEpoch {
@@ -81,8 +79,6 @@ export default function SimulationPanel({
   const [duration, setDuration] = useState(6);
   const [isi, setIsi] = useState(10);
   const [bui, setBui] = useState(20);
-  const [showWarning, setShowWarning] = useState(true);
-
   const handleLaunch = () => {
     if (!ignitionPoint) return;
     onSimulationStart({

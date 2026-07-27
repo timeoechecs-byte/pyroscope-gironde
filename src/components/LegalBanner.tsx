@@ -7,18 +7,11 @@
  */
 
 import { AlertTriangle } from "lucide-react";
-import { useEffect, useState } from "react";
 
 export default function LegalBanner() {
-  const [visible, setVisible] = useState(true);
-
-  // Forcer la visibilité : même si un malandrin tente de cacher le bandeau
-  // via une classe CSS ou un style injecté, le useEffect le ramène.
-  useEffect(() => {
-    setVisible(true);
-  }, []);
-
-  if (!visible) return null;
+  // Le bandeau est TOUJOURS visible — pas d'état, pas de toggle, pas de fermeture.
+  // §3 SPEC : "Ce bandeau ne doit être ni masquable ni retirable."
+  // Toute PR qui supprime ou affaiblit ce composant est REJETÉE.
 
   return (
     <div

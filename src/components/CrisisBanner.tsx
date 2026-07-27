@@ -11,7 +11,6 @@
  * Peut être désactivé uniquement par toggle explicite.
  */
 
-import { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
