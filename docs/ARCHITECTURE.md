@@ -1,0 +1,301 @@
+# Architecture PyroScope 33
+
+Ce document accompagne [`docs/SPEC.md`](SPEC.md) et décrit la **structure cible** du projet
+PyroScope 33. L'état courant du dépôt reprend le template Freebuff (React + Vite + Convex +
+VlyToolbar) ; la **migration** du template vers la cible est planifiée en
+[`docs/PHASE_PLAN.md`](PHASE_PLAN.md) PHASE 2.
+
+PHASE 1 ne touche que la documentation. Aucun fichier runtime n'est modifié.
+
+---
+
+## 1. Vue d'ensemble cible
+
+```
+.
+├── backend/                # Python 3.12 + FastAPI (NON exécuté dans la preview Freebuff)
+│   ├── app/
+│   │   ├── api/            # routes FastAPI (endpoints REST, OpenAPI 3.1)
+│   │   ├── sources/        # connecteurs NASA FIRMS, Open-Meteo, Copernicus, IGN, OSM…
+│   │   ├── science/        # CFFWIS, Rothermel, coefficient Gironde, score final
+│   │   ├── db/             # modèles SQLAlchemy + migrations Alembic sur PG/PostGIS+TimescaleDB
+│   │   ├── cache/          # wrappers Redis (cache + rate limiting)
+│   │   ├── scheduler/      # APScheduler (ingestion périodique des sources)
+│   │   ├── settings.py     # Pydantic Settings (env vars, .env.example)
+│   │   └── main.py         # FastAPI app, healthcheck /healthz, OpenAPI exposé
+│   ├── tests/              # pytest, dont cas de référence Van Wagner & Pickett 1985
+│   ├── pyproject.toml      # ruff, mypy strict, pytest config
+│   ├── Dockerfile
+│   └── README.md
+├── frontend/               # React 19 + TS strict + Vite + shadcn/ui
+│   │                        # (= contenu actuel de src/ lors de la bascule PHASE 2)
+│   ├── src/
+│   │   ├── pages/          # Landing, MapPage, Auth (optionnel), Dashboard (optionnel)
+│   │   ├── components/     # LegalBanner (fixe, non masquable), MapView, LayerToggles, DataStatusBadge…
+│   │   ├── hooks/          # useApiQuery (typed), useBackendHealth, useDegradedMode…
+│   │   ├── lib/            # client API typé (généré depuis OpenAPI), utils
+│   │   ├── stores/         # état global léger (zustand ou context seul)
+│   │   └── main.tsx
+│   ├── public/
+│   └── vite.config.ts
+├── infra/
+│   ├── docker-compose.yml        # postgres + postgis + timescaledb + redis + backend
+│   ├── docker-compose.dev.yml    # variante dev avec hot-reload
+│   ├── Caddyfile                 # reverse-proxy production (HTTPS + headers sécurité)
+│   └── README.md
+├── docs/                   # la documentation (SPEC, ARCHITECTURE, PHASE_PLAN, SOURCES)
+│   ├── SPEC.md
+│   ├── ARCHITECTURE.md     # le présent document
+│   ├── PHASE_PLAN.md
+│   └── SOURCES.md
+├── README.md               # bandeau légal + statut PHASE
+├── LICENSE                 # AGPL-3.0 (à confirmer)
+├── package.json
+├── tsconfig.json
+└── pyproject.toml          # éventuel, outils communs (ruff, mypy)
+```
+
+**Note Freebuff** : la racine du dépôt contient aujourd'hui `src/`, `convex/`, `index.html`,
+`package.json`. Le dossier `frontend/` de la cible **absorbera** le contenu actuel de `src/`
+au début de la **PHASE 2**. La migration Convex → FastAPI/Postgres est découpée en commits
+atomiques, documentés dans `docs/PHASE_PLAN.md`.
+
+---
+
+## 2. Backend Python (`backend/`)
+
+### Pourquoi FastAPI + Pydantic v2
+
+- **Typed-first** : les modèles Pydantic v2 sont sérialisables en JSON Schema, partagés
+  avec le frontend via OpenAPI généré.
+- Asynchrone via `uvicorn` : un seul worker suffit pour la charge Gironde.
+- Écosystème géospatial mature côté Python (`shapely`, `pyproj`, `geopandas`,
+  `rasterio`, `xarray`) — pas de dépendance native exotique côté base.
+
+### Pourquoi PostgreSQL 16 + PostGIS + TimescaleDB
+
+- **PostgreSQL 16** : base relationnelle standard, mature, sauvegardable avec `pg_dump`.
+- **PostGIS** : calculs géospatiaux en SQL (`ST_Intersects`, `ST_Distance`, index GiST).
+  Indispensable pour : distance à la route la plus proche, au camping le plus proche,
+  intersection avec BD Forêt, etc.
+- **TimescaleDB** : hypertables pour les séries temporelles (points chauds FIRMS,
+  observations météo, séries CFFWIS, séries Rothermel). Compression native et rétention
+  configurable (ex. downsampling après 90 jours).
+
+### Pourquoi APScheduler (pas Celery) en phase initiale
+
+- Pas de broker externe à gérer.
+- Suffisant pour :
+  - FIRMS toutes les 30 minutes,
+  - Open-Meteo toutes les heures,
+  - Sentinel-2 quotidien,
+  - NDVI hebdomadaire.
+- Migration vers **Celery + Redis broker + workers séparés** envisageable si la charge
+  dépasse un seul nœud (PHASE 5+).
+
+### Pourquoi Redis
+
+- Cache des appels FIRMS / Open-Meteo (économie de quota API).
+- Compteurs de rate limit par source.
+- Plus tard : broker Celery (optionnel).
+
+### Mode dégradé backend
+
+Toute erreur d'un connecteur est capturée par le wrapper commun
+`backend/app/sources/base.py` et renvoie un payload structuré :
+
+```json
+{
+  "data": null,
+  "error": "firms_unreachable",
+  "message": "NASA FIRMS API non joignable (HTTP 503)",
+  "fetched_at": "2025-07-27T12:00:00Z",
+  "next_retry_at": "2025-07-27T12:05:00Z"
+}
+```
+
+Le frontend distingue cet état via un **discriminated union** (`status`:
+`loading | fresh | stale | unavailable`) et affiche un panneau « donnée indisponible »
+plutôt que de fabriquer un substitut (cf. §3).
+
+---
+
+## 3. Frontend React (`frontend/`)
+
+### Pourquoi MapLibre GL JS (pas Mapbox, pas Google)
+
+- **Libre** (BSD-3), fork open source de Mapbox SDK v1.x sans télémétrie.
+- Compatible avec :
+  - tuiles **raster OpenStreetMap** (ODbL) ;
+  - tuiles **WMTS IGN Géoplateforme** (licence ouverte, gratuit avec clé d'inscription).
+- Style éditable en JSON (`/style.json`) via Maputnik.
+
+### Pourquoi React 19 + TS strict + Vite
+
+- Compatible avec la prévisualisation Freebuff (le template fournit déjà React 19,
+  Vite 7, alias `@/`).
+- TS strict : le frontend importe des schémas **Zod générés depuis OpenAPI** et
+  reçoit des erreurs typées — pas de `any`, pas d'inférence paresseuse.
+- Vite : dev server rapide, intégré nativement par Freebuff.
+
+### Pourquoi shadcn/ui + Tailwind v4
+
+- Déjà présents dans le template, zéro coût d'adoption.
+- Système de tokens cohérent pour les légendes de danger (très faible → extrême), à
+  porter dans `src/index.css` au début de PHASE 2.
+
+### Mode dégradé frontend
+
+L'API client expose un statut discriminé par hook :
+
+```ts
+type QueryStatus =
+  | { status: "loading" }
+  | { status: "fresh"; data: T; fetched_at: string }
+  | { status: "stale"; data: T; fetched_at: string; age_s: number }
+  | { status: "unavailable"; reason: string; fetched_at?: string };
+```
+
+Exemple d'usage dans un panneau :
+
+```tsx
+const hotspots = useFirmsHotspots();
+
+switch (hotspots.status) {
+  case "loading":      return <Spinner />;
+  case "unavailable":  return <DataUnavailable source="NASA FIRMS" reason={hotspots.reason} />;
+  case "stale":        return <HotspotMap data={hotspots.data} staleSince={hotspots.age_s} />;
+  case "fresh":        return <HotspotMap data={hotspots.data} />;
+}
+```
+
+Chaque panneau dynamique de l'UI reçoit un badge explicite — les utilisateurs
+comprennent d'où viennent les chiffres et pourquoi certaines couches n'apparaissent
+pas.
+
+---
+
+## 4. Intégration à la prévisualisation Freebuff — pourquoi ça tient debout
+
+Freebuff exécute le frontend **dans un environnement Node + navigateur**. Il **ne**
+peut pas exécuter Python, PostgreSQL, PostGIS, TimescaleDB, Redis ni Docker. Cette
+limite n'est pas détournée : elle est **assumée** comme mode dégradé officiel.
+
+| Élément | Comportement attendu | État PHASE 1 |
+| --- | --- | --- |
+| `src/main.tsx` (Vite + React) | Inchangé, sert toujours le frontend. | Conservé tel quel. |
+| Tuiles OSM / IGN via MapLibre (futures) | Servent en statique, fonctionnent sans backend. | Activables dès que la page `/carte` existera (PHASE 2). |
+| Dossier `convex/` | Inert tant que `ConvexAuthProvider` n'est pas démonté. | Conservé en PHASE 1, démonté en PHASE 2. |
+| VlyToolbar / VlyPlugin | Indépendant du backend. | Conservé tel quel. |
+| Backend Python | **Pas exécutable** dans la preview. | Hors preview dès PHASE 1. |
+| Postgres + PostGIS | **Pas exécutable** dans la preview. | Hors preview dès PHASE 1. |
+| Ingestion FIRMS / Open-Meteo | Injoignable depuis la preview. | Hors preview dès PHASE 1. |
+
+**Conséquence PHASE 1** : la page `/` documente la cible, affiche le bandeau légal
+(`LegalBanner.tsx`), et toute page `/carte` affichera la carte OSM/IGN en mode
+**« données indisponibles »** tant que le backend n'est pas connecté. Aucun pixel de
+donnée n'est fabriqué : c'est la conformité §C-04 + §C-05.
+
+---
+
+## 5. Contrats API (frontend ↔ backend)
+
+- Backend expose **OpenAPI 3.1** sur `/openapi.json`.
+- À chaque `make openapi-client` (PHASE 2), un script Python génère des schémas
+  **Zod** (puis TypeScript types) côté frontend.
+- Le frontend n'**invente jamais** de payload : si une route échoue, le hook
+  `useApiQuery` retourne `status: "unavailable"` documenté §3.
+
+Liste initiale des routes (esquisse — PHASE 2+) :
+
+| Méthode | URL | Description |
+| --- | --- | --- |
+| `GET` | `/healthz` | Healthcheck du backend (latence Redis, Postgres OK, version). |
+| `GET` | `/api/v1/hotspots` | Points chauds NASA FIRMS sur l'emprise, fenêtre glissante configurable. |
+| `GET` | `/api/v1/weather/current` | Météo courante interpolée sur la grille. |
+| `GET` | `/api/v1/weather/forecast` | Prévisions multi-modèles sur fenêtre allant jusqu'à 7 jours. |
+| `GET` | `/api/v1/fwi/current` | FWI par cellule (EFFIS ou recalculé). |
+| `GET` | `/api/v1/fwi/series` | Séries temporelles FWI par cellule (entrée : `cell_id`). |
+| `GET` | `/api/v1/risk/cells` | Score 0-100 par cellule + décomposition contributions + qualité donnée. |
+| `GET` | `/api/v1/risk/series` | Séries temporelles du risque. |
+| `GET` | `/api/v1/prefectoral` | Lecture seule des arrêtés préfectoraux (table manuelle). |
+
+---
+
+## 6. Configuration
+
+### Variables d'environnement — frontend
+
+| Variable | Défaut | Description |
+| --- | --- | --- |
+| `VITE_API_URL` | `http://localhost:8000` | URL du backend FastAPI. |
+| `VITE_MAP_STYLE_URL` | `/style.json` | Style MapLibre (tuiles OSM/IGN). |
+| `VITE_ANALYTICS_DISABLED` | `true` | Aucune télémétrie externe par défaut. |
+
+### Variables d'environnement — backend (`settings.py` Pydantic v2)
+
+| Variable | Défaut | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgresql://pyroscope:pyroscope@postgres:5432/pyroscope` | Postgres+PostGIS+TimescaleDB. |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis. |
+| `FIRMS_API_KEY` | (vide) | Clé gratuite NASA FIRMS (inscription obligatoire). |
+| `FIRMS_MAP_KEY` | (vide) | Map key FIRMS (pour visualisation). |
+| `OPEN_METEO_URL` | `https://api.open-meteo.com/v1` | Base URL Open-Meteo. |
+| `COPERNICUS_USER` / `COPERNICUS_PASS` | (vide) | Identifiants Copernicus Data Space. |
+| `COPERNICUS_STAC_URL` | `https://stac.dataspace.copernicus.eu/v1` | Endpoint STAC. |
+| `IGN_API_KEY` | (vide) | Clé IGN Géoplateforme (gratuite avec inscription). |
+| `ENABLE_BLITZORTUNG` | `false` | Feature flag foudre — opt-in. |
+| `LOG_LEVEL` | `INFO` | Logging structuré JSON. |
+
+Les secrets ne sont **jamais** commités : un `infra/.env.example` documente les noms.
+Les valeurs sont gérées via `docker compose --env-file` côté production et via le
+panneau **Keys / API keys** de Freebuff côté preview (cf. règle Freebuff : ne pas
+éditer `.env`).
+
+---
+
+## 7. Tests
+
+### Backend (`pytest`)
+
+- `tests/science/test_cffwis.py` — validation des 6 composantes (FFMC, DMC, DC, ISI,
+  BUI, FWI, DSR) contre des **cas publiés Van Wagner & Pickett 1985**.
+- `tests/science/test_rothermel.py` — ROS, longueur de flamme Byram, sur cas
+  Anderson 13.
+- `tests/science/test_gironde_factor.py` — recomposition correcte du coefficient et
+  respect des bornes [0,1].
+- `tests/api/test_*.py` — contrat OpenAPI stable par endpoint.
+- `tests/sources/test_*.py` — connecteurs avec `httpx_mock` et cassettes rejouées
+  (VCR-like, jamais en accès direct).
+
+### Frontend (`vitest` + Testing Library)
+
+- `MapView.test.tsx` — rendu en mode dégradé.
+- `LegalBanner.test.tsx` — présence, non masquable.
+- `useApiQuery.test.tsx` — gestion des 4 statuts (`loading | fresh | stale | unavailable`).
+- `Landing.test.tsx` — bandeau et CTA visibles.
+
+---
+
+## 8. Qualité
+
+| Outil | Cible | Commande |
+| --- | --- | --- |
+| ruff | format + lint Python | `ruff check .` / `ruff format .` |
+| mypy strict | typage Python | `mypy backend/app` |
+| eslint | lint TypeScript | `eslint .` |
+| tsc | types TypeScript | `tsc -b --noEmit` |
+| pytest | tests Python | `pytest -q` |
+| vitest | tests TypeScript | `vitest run` |
+
+L'environnement Freebuff fournit `tsc -b --noEmit` via Bun. Le reste de la CI est
+libre (GitHub Actions envisageable hors preview).
+
+---
+
+## 9. Migrations
+
+- **Base de données** : **Alembic** dans `backend/`, premier script en PHASE 2.
+- **Schéma OpenAPI → frontend** : script Python `make openapi-client`.
+- **Template → cible** : `docs/PHASE_PLAN.md` décrit l'ordre de démontage Convex et
+  la migration vers monorepo. **Aucun changement structurel en PHASE 1.**
