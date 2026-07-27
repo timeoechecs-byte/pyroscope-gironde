@@ -224,6 +224,18 @@ Liste initiale des routes (esquisse — PHASE 2+) :
 
 ## 6. Configuration
 
+### Constantes géométriques (trois bboxes, cf. SPEC §1)
+
+| Constante | Calcul | Usage |
+| --- | --- | --- |
+| `BBOX_DEPARTEMENT` | constante | (-1.35, 44.15, 0.35, 45.60) — affichage, attribution |
+| `BBOX_CALCUL` | `BBOX_DEPARTEMENT.expand(20_km)` | calculs scientifiques (FWI, Rothermel, GIRONDE_FACTOR) |
+| `BBOX_INGESTION` | `BBOX_DEPARTEMENT.expand(45_km)` | requêtes FIRMS, Open-Meteo, Copernicus |
+
+Les trois bboxes sont dérivées à la construction de l'app via
+`backend/app/geo/bbox.py` (`pyproj.Geod` pour la distance métrique). Aucune n'est
+codée en dur dans la logique métier.
+
 ### Variables d'environnement — frontend
 
 | Variable | Défaut | Description |
@@ -238,11 +250,14 @@ Liste initiale des routes (esquisse — PHASE 2+) :
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql://pyroscope:pyroscope@postgres:5432/pyroscope` | Postgres+PostGIS+TimescaleDB. |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis. |
-| `FIRMS_API_KEY` | (vide) | Clé gratuite NASA FIRMS (inscription obligatoire). |
-| `FIRMS_MAP_KEY` | (vide) | Map key FIRMS (pour visualisation). |
-| `OPEN_METEO_URL` | `https://api.open-meteo.com/v1` | Base URL Open-Meteo. |
-| `COPERNICUS_USER` / `COPERNICUS_PASS` | (vide) | Identifiants Copernicus Data Space. |
-| `COPERNICUS_STAC_URL` | `https://stac.dataspace.copernicus.eu/v1` | Endpoint STAC. |
+| `FIRMS_API_KEY` | (vide) | Clé gratuite NASA FIRMS (CSV API). |
+| `FIRMS_MAP_KEY` | (vide) | Map key FIRMS (web services). |
+| `OPEN_METEO_URL` | `https://api.open-meteo.com/v1` | Base URL Open-Meteo Forecast. |
+| `OPEN_METEO_ARCHIVE_URL` | `https://archive-api.open-meteo.com/v1/archive` | Base URL Open-Meteo Historical (PHASE 2). |
+| `OPEN_METEO_AIR_URL` | `https://air-quality-api.open-meteo.com/v1` | Base URL Open-Meteo Air Quality. |
+| `COPERNICUS_USER` / `COPERNICUS_PASS` | (vide) | Identifiants Copernicus Data Space Ecosystem (PHASE 3). |
+| `COPERNICUS_STAC_URL` | `https://stac.dataspace.copernicus.eu/v1` | Endpoint STAC CDSE. |
+| `COPERNICUS_QUOTA_BYTES_LIMIT_MONTH` | (vide) | Quota mensuel Bytes CDSE. Source du `external_api_quota_limit{source="copernicus"}`. |
 | `IGN_API_KEY` | (vide) | Clé IGN Géoplateforme (gratuite avec inscription). |
 | `ENABLE_BLITZORTUNG` | `false` | Feature flag foudre — opt-in. |
 | `LOG_LEVEL` | `INFO` | Logging structuré JSON. |
@@ -290,6 +305,28 @@ panneau **Keys / API keys** de Freebuff côté preview (cf. règle Freebuff : ne
 
 L'environnement Freebuff fournit `tsc -b --noEmit` via Bun. Le reste de la CI est
 libre (GitHub Actions envisageable hors preview).
+
+### Métriques Prometheus — noyau non négociable
+
+Cinq métriques exposed par `/metrics` sont imposées par la spec, **instanciées dès
+PHASE 0** (à zéro) et **renseignées dès que la source existe** :
+
+| Nom | Labels | Sens |
+| --- | --- | --- |
+| `data_age_seconds` | `source` | Âge de la donnée **la plus récente** ingérée. **C'est l'âge, pas l'heure du dernier appel** : si FIRMS a été appelé il y a 1 minute mais sa donnée date d'il y a 30 min, la métrique vaut 1800. |
+| `ingestion_total` | `source`, `status` | Compteur succès/échec par connecteur (`status="success|error|timeout|..."`). |
+| `external_api_duration_seconds` | `source` | Histogramme durée des appels sortants (P50/P95/P99). |
+| `external_api_quota_used` | `source` | Compteur cumulatif des unités consommées du quota. |
+| `external_api_quota_limit` | `source` | Quota total sur la fenêtre de référence (mensuel/selon API). |
+| `fwi_recursion_gap_days` | `source` | Jours manquants dans la chaîne récursive CFFWIS. Toute valeur > 1 jour doit déclencher une alerte Prometheus et bloquer l'affichage de la classe FWI. **Métrique de détection de corruption silencieuse des indices.** |
+| `grid_coverage_ratio` | `layer` | Part de cellules avec une donnée valide pour la couche donnée (0 à 1). |
+
+**Pattern quota/rate-limit** instancié dès **PHASE 1** sur FIRMS et Open-Meteo (qui
+ont un cap, fût-il élevé). Quand Copernicus CDSE arrive en PHASE 3, le même pattern
+se branche sans nouveau code. **Découvrir le quota épuisé au moment où on commence à
+le consommer est déjà trop tard.**
+
+Métriques supplémentaires discutables : les sept ci-dessus sont non négociables.
 
 ---
 

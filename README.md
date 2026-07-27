@@ -10,14 +10,21 @@ ingérée à ce stade. Voir [`docs/PHASE_PLAN.md`](docs/PHASE_PLAN.md).
 
 ---
 
-## Emprise géographique
+## Emprise géographique — trois bboxes
 
-- `lon_min = -1.35`, `lon_max =  0.35`
-- `lat_min = 44.15`, `lat_max = 45.60`
-- Grille de calcul : cellules de **250 m** en `EPSG:2154` (Lambert-93)
-- Affichage : reprojection en `EPSG:4326`
+Une seule bbox polyvalente conduit à des artefacts (cônes tronqués, surcoût d'ingestion,
+affichage incohérent). Trois bboxes distinctes sont imposées :
 
-Toute donnée hors emprise est ignorée.
+| Bbox | Usage | Valeur typique (lon_min, lat_min, lon_max, lat_max) |
+| --- | --- | --- |
+| `BBOX_DEPARTEMENT` | **Affichage, attribution, périmètre annoncé.** | (-1.35, 44.15, 0.35, 45.60) |
+| `BBOX_CALCUL` | **Calcul scientifique** (FWI, Rothermel, coefficient Gironde). `BBOX_DEPARTEMENT.expand(20_km)`. | ≈ (-1.55, 43.97, 0.60, 45.78) |
+| `BBOX_INGESTION` | **Ingestion large** (FIRMS, Open-Meteo, Copernicus). `BBOX_DEPARTEMENT.expand(45_km)`. | ≈ (-1.70, 43.80, 0.95, 45.95) |
+
+- Grille de calcul : cellules de **250 m** en `EPSG:2154` (Lambert-93).
+- Affichage : reprojection en `EPSG:4326`.
+- Toute donnée hors `BBOX_DEPARTEMENT` est étiquetée `hors_périmètre: true` ou filtrée
+  avant affichage utilisateur.
 
 ## Stack technique (socle non négociable)
 
@@ -55,12 +62,15 @@ toute valeur inventée oumockée pour combler un trou.
 ## Plan
 
 | Phase | Périmètre | État |
-| --- | --- | --- |
-| **PHASE 1** | Spécifications, ossature monorepo, structure backend + frontend, moteur CFFWIS avec tests de référence | **En cours** |
-| PHASE 2 | Sources temps réel : NASA FIRMS (points chauds), Open-Meteo (météo/prévisions) | Planifiée |
-| PHASE 3 | Copernicus Data Space (NDVI/NDMI), IGN BD Forêt, OSM/Overpass, IGN RGE ALTI | Planifiée |
-| PHASE 4 | Coefficient Gironde, Rothermel, score de risque 0-100 + décomposition + indicateur de qualité | Planifiée |
-| PHASE 5+ | Composante ML : entraînement sur historique validé, recalibrage | Planifiée |
+| --- | --- | ---|
+| **Phase Pré-0** | Spécifications, ossature docs, arbre de décisions | **Livrée** |
+| **PHASE 0** | Fondations : docker compose, Alembic, healthcheck `/healthz`, scaffold `/metrics`, CI, README | **Démarrable** |
+| **PHASE 1** | MVP visualisation : NASA FIRMS + Open-Meteo (AROME HD), carte MapLibre | Planifiée |
+| **PHASE 2** | Moteur FWI : CFFWIS complet + ERA5 historique + persistance TimescaleDB | Planifiée |
+| **PHASE 3** | Végétation & terrain : BD Forêt V2, RGE ALTI, CORINE, NDVI/NDMI Sentinel-2 | Planifiée |
+| **PHASE 4** | Propagation Rothermel + coefficient Gironde (YAML) + score 0-100 + mode simulation | Planifiée |
+| **PHASE 5** | ML **conditionnée** : jeu d'allumages géolocalisé + validation temporelle par blocs battant le baseline FWI | **Conditionnée** |
+| **PHASE 6** | Optionnel : PWA + notifications (avec garde-fou), exports GeoJSON/CSV, API publique. **Webcams + ML : hors périmètre v1.** | Planifiée |
 
 ## Documentation
 
@@ -92,10 +102,26 @@ figé, z-index maximum, non masquable).
 données Copernicus, IGN et OpenStreetMap). Une décision est attendue avant le commit de
 la phase 2.
 
-## Licence des données cartographiques affichées
+## Licence des données cartographiques et météo
 
 - Tuiles OpenStreetMap : © OpenStreetMap contributors, **ODbL**.
 - Tuiles IGN Géoplateforme : © IGN, **licence ouverte** (autorisation avec mention).
 - Données Copernicus : **libres et gratuites** avec attribution.
 - Données NASA FIRMS : utilisation non commerciale (mention exigée).
-- Données Open-Meteo / ERA5 : **usage non commercial**.
+
+### Open-Meteo — usage non commercial, 4 conditions cumulatives
+
+Open-Meteo est fourni sous licence **non commerciale**. Le projet PyroScope 33 s'engage
+sur les **quatre conditions cumulatives** suivantes :
+
+1. **Open source** (AGPL-3.0 à confirmer avant finalisation du `LICENSE`).
+2. **Pas de publicité, pas d'abonnement, pas de monétisation** directe ou indirecte.
+3. **Attribution CC BY 4.0** visible : pied de page de l'application + page « Sources ».
+4. La redistribution des **données météo** Open-Meteo (et NOAA / ECMWF / DWD sous-jacents)
+   est mentionnée à chaque visualisation.
+
+**Fallback défini maintenant, pas plus tard** : si le projet devient un jour commercial,
+ou dépasse le plafond du tier non commercial, l'option de repli est
+**l'auto-hébergement du serveur Open-Meteo** (image Docker officielle open source :
+https://github.com/open-meteo/open-meteo). La bascule vers le serveur auto-hébergé
+n'introduit pas de dépendance payante ; elle reste conforme à §C-01.

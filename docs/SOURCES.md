@@ -32,9 +32,9 @@ contraintes de coût, et notes spécifiques.
 
 | Source | Statut | Clé | Méthode | Coût | Licence | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Open-Meteo Forecast API | Planifiée PHASE 4 | aucune | REST multi-coordonnées | 0 € | **usage non commercial** | Modèles paramétrables : `meteofrance_arome_france_hd` (~1,5 km), `meteofrance_arome_france`, `icon_d2`, `ecmwf_ifs025`, `gfs_seamless`. Comparaison multi-modèles prévue en PHASE 4. |
-| Open-Meteo Historical / ERA5 | Planifiée PHASE 5+ | aucune | REST | 0 € | **usage non commercial** | Conforme à la spec §6.1 : ≥ 60 jours d'historique obligatoires pour PHASE 3 (init CFFWIS). |
-| Open-Meteo Air Quality (CAMS) | Planifiée PHASE 4 | aucune | REST | 0 € | **usage non commercial** | Variables : `pm2_5`, `pm10`, `aerosol_optical_depth`, `uv_index`, `dust`. Utilisation secondaire (info complémentaire, pas source de risque). |
+| Open-Meteo Forecast API | Planifiée **PHASE 1 (MVP)** | aucune | REST multi-coordonnées | 0 € | **usage non commercial — 4 conditions cumulatives** | Modèles paramétrables : `meteofrance_arome_france_hd` (~1,5 km), `meteofrance_arome_france`, `icon_d2`, `ecmwf_ifs025`, `gfs_seamless`. **PHASE 1 n'utilise que `meteofrance_arome_france_hd`**. Comparaison multi-modèles en PHASES 2/4. |
+| Open-Meteo Historical / ERA5 | Planifiée **PHASE 2** | aucune | REST | 0 € | **usage non commercial — 4 conditions cumulatives** | Conforme à la spec §6.1 : ≥ 60 jours d'historique minimaux (≥ 1 an recommandé) pour init CFFWIS. |
+| Open-Meteo Air Quality (CAMS) | Planifiée **PHASE 1 (MVP)** | aucune | REST | 0 € | **usage non commercial — 4 conditions cumulatives** | Variables : `pm2_5`, `pm10`, `aerosol_optical_depth`, `uv_index`, `dust`. Utilisation secondaire (info complémentaire, pas source de risque). |
 
 ---
 

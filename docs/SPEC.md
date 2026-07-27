@@ -10,18 +10,31 @@ et tracée dans ce fichier (section « Décisions de phase »).
 PyroScope 33 est une application web **open source** de suivi et d'évaluation du **risque
 d'incendie de forêt** sur le département de la **Gironde (France)**.
 
-Emprise géographique unique du projet (bounding box) :
+Emprise géographique — **trois bboxes distinctes**, chacune avec un usage précis.
 
-| Paramètre | Valeur |
-| --- | --- |
-| `lon_min` | -1.35 |
-| `lon_max` | 0.35 |
-| `lat_min` | 44.15 |
-| `lat_max` | 45.60 |
+Une seule bbox polyvalente conduit à des artefacts : cônes de propagation tronqués au
+bord, surcoût d'ingestion hors-périmètre, ou affichage incohérent entre la donnée
+représentée et la donnée calculée. Trois bboxes sont donc imposées :
 
-Toute donnée hors de cette emprise est **ignorée**. La grille de travail est constituée de
-cellules de **250 m** projetées en **EPSG:2154 (Lambert-93)** pour les calculs, puis
-reprojetées en **EPSG:4326** pour l'affichage.
+| Bbox | Usage | Marge / forme | Valeur typique (lon_min, lat_min, lon_max, lat_max) |
+| --- | --- | --- | --- |
+| `BBOX_DEPARTEMENT` | **Affichage, attribution, périmètre annoncé à l'utilisateur.** C'est la bbox visible sur la carte et mentionnée dans les mentions légales. | contour officiel du département de la Gironde | (-1.35, 44.15, 0.35, 45.60) |
+| `BBOX_CALCUL` | **Calcul scientifique** : cônes Rothermel, interpolation météo sur la grille, FWI, coefficient Gironde, score final. **Inclut `BBOX_DEPARTEMENT` + ~20 km de marge** pour que les cônes 12 h et l'interpolation ne soient pas tronqués au bord. | `BBOX_DEPARTEMENT.expand(20_km)` | ≈ (-1.55, 43.97, 0.60, 45.78) |
+| `BBOX_INGESTION` | **Ingestion des sources externes** (FIRMS, Open-Meteo, Copernicus). Marge large, surcoût marginal ; toute cellule hors-`BBOX_DEPARTEMENT` est simplement marquée « hors-périmètre » et masquée à l'affichage. | `BBOX_DEPARTEMENT.expand(45_km)` | ≈ (-1.70, 43.80, 0.95, 45.95) |
+
+**Règles dérivées** :
+
+- Les cellules de travail restent en `EPSG:2154 (Lambert-93)` avec **pas de 250 m**, et
+  sont indexées sur `BBOX_CALCUL`.
+- Toute valeur fournie au frontend qui sort de `BBOX_DEPARTEMENT` doit être étiquetée
+  `hors_périmètre: true` ou être filtrée avant affichage utilisateur final.
+- Étendre `BBOX_CALCUL.max_lon` à 0.80 ajouterait ~35 km de cellules à l'est
+  (territoires de la Dordogne et du Lot-et-Garonne) sans bénéfice pour le risque
+  Gironde — l'écart entre `BBOX_CALCUL.max_lon` (0.60) et `BBOX_INGESTION.max_lon`
+  (0.95) reflète cette distinction entre calcul scientifique et ingestion-large.
+
+Les trois bboxes sont définies comme constantes dans `backend/app/settings.py` et
+exposées à l'API via `GET /api/sources` (couche « configuration »).
 
 ### Affichages attendus sur la carte interactive
 
@@ -41,7 +54,29 @@ reprojetées en **EPSG:4326** pour l'affichage.
 | **C-02** | **Aucune API de LLM propriétaire** dans le produit final. Tout modèle embarqué doit être open source et exécutable en local (scikit-learn, XGBoost, LightGBM, CatBoost, PyTorch). |
 | **C-03** | **Auto-hébergeable.** `docker compose up` doit suffire à lancer toute la stack sur une machine unique. |
 | **C-04** | **Mode dégradé obligatoire.** Si une source est indisponible, l'app continue avec les autres et **signale clairement la donnée manquante**. Jamais de crash, jamais de valeur inventée. |
-| **C-05** | **Aucune donnée fabriquée.** Interdiction de générer des valeurs de démonstration, de mocker des points chauds ou de remplir des trous par interpolation silencieuse. Si la donnée n'existe pas, l'UI affiche « donnée indisponible ». |
+| **C-05** | **Aucune donnée fabriquée.** Toute valeur affichée dans l'UI doit provenir d'une **mesure** ou d'un **calcul documenté**. Voir §C-05.a à §C-05.d ci-dessous. |
+
+> ### Sous-règles C-05
+>
+> **§C-05.a — Interpolation spatiale** entre points d'une même série (météo, vent, FWI)
+> est **autorisée**, à condition que :
+> 1. La méthode soit documentée (couches concernées et fichier `coefficients.yaml`).
+> 2. L'incertitude associée soit **calculée et exposée** dans l'UI (page « Sources » /
+>    composant `DataStatusBadge`).
+> 3. Aucune cellule hors de `BBOX_CALCUL` ne reçoive de donnée interpolée.
+>
+> **§C-05.b — Interpolation temporelle vers l'instantané** est **interdite**. Le FWI est
+> un indice journalier calé à midi local ; les points chauds satellite sont des passages
+> orbitaux discrets ; aucune valeur dérivée par lissage temporel ne doit être présentée
+> comme « maintenant ». La donnée la plus récente est affichée avec son **horodatage
+> réel** et son **âge**, sans lissage.
+>
+> **§C-05.c — Affichage « donnée indisponible »** : en cas d'absence de donnée pour une
+> cellule ou un instant donné, l'UI affiche explicitement « donnée indisponible ». Aucune
+> valeur par défaut, comblée ou interpolée silencieusement n'est tolérée.
+>
+> **§C-05.d — Données de démonstration / mockées** : interdites dans toute couche visible
+> par l'utilisateur final, y compris en prévisualisation Freebuff.
 
 ---
 
@@ -227,9 +262,8 @@ risque = f(FWI_normalisé, coefficient_local, ROS_potentielle, facteur_humain)
   Un pourcentage serait scientifiquement faux et dangereusement trompeur : aucun modèle
   calibré sur observations validées n'est disponible.
 - **Décomposition des contributions** affichée au clic sur la cellule (facteur, poids,
-  valeur).
-- **Indicateur de qualité de donnée** : quelles sources étaient disponibles, à quelle
-  heure, avec quelle latence.
+  valeur).- **Indicateur de qualité de donnée** : quelles sources étaient disponibles, à quelle heure, avec quelle latence.
+- **Aucune formulation de « confiance : X % »** n'est affichée à l'utilisateur — **jamais**. L'incertitude s'exprime par **dispersion inter-modèles** (PHASE 5+) ou par **intervalle**, jamais par un chiffre de confiance unique fabriqué. Cette interdiction pèse sur **toutes** les sorties (score final, FWI par cellule, probabilité sous-jacente d'un modèle calibré) : la calibration Platt/isotonique reste un processus **interne** au modèle ML, jamais exposé tel quel.
 
 ---
 
@@ -274,3 +308,11 @@ risque = f(FWI_normalisé, coefficient_local, ROS_potentielle, facteur_humain)
 | **PHASE 1** | Aucune modification de `convex/`, `package.json`, `vite.config.ts` ou `src/main.tsx`. | Ces fichiers portent un couplage fort avec le runtime Freebuff et la migration Convex → FastAPI/Postgres mérite des commits dédiés en PHASE 2. |
 | **PHASE 1** | Statut produit côté Freebuff preview = **mode dégradé doc-only**. | L'environnement Freebuff (Node + navigateur) n'exécute ni Python, ni PostgreSQL, ni Docker. Toute carte sans backend serait une fabrication (interdit §C-05). |
 | **PHASE 1** | Licence proposée par défaut : **AGPL-3.0**. | Compatible avec la redistribution ODbL (OSM), Copernicus (ouverte avec attribution), IGN (licence ouverte), Open-Meteo (usage non commercial sous conditions). À confirmer avant PHASE 2. |
+| **Phase Pré-0** | Adoption de **3 bboxes distinctes** (`BBOX_DEPARTEMENT`, `BBOX_CALCUL`, `BBOX_INGESTION`) avec marges 0 / 20 km / 45 km. | Empêche cônes Rothermel tronqués au bord et surcoût d'ingestion hors-périmètre. `BBOX_CALCUL.max_lon` reste à 0.60 (≈20 km à l'est) ; `BBOX_INGESTION.max_lon` à 0.95 (≈45 km). |
+| **Phase Pré-0** | Reformulation de §C-05 en **§C-05.a à §C-05.d** : interpolation spatiale autorisée (méthode + incertitude documentées), interpolation temporelle vers « maintenant » interdite. | Distingue clairement l'interpolation légitime (modèle météo spatial) de l'invention d'instantané temporel. |
+| **Phase Pré-0** | Interdiction explicite des **« confiance : X % »** dans l'UI, y compris depuis modèles calibrés. | L'incertitude est rendue par intervalle ou dispersion inter-modèles, jamais par un chiffre unique. |
+| **Phase Pré-0** | Instanciation des **5 métriques Prometheus core** dès PHASE 0 (avec valeurs 0) ; structuration effective dès PHASE 1 sur FIRMS + Open-Meteo. CDSE et Sentinel s'y branchent en PHASE 3 sans nouveau pattern. | « Découvrir le quota épuisé quand on commence à le consommer est déjà trop tard. » (cf. `docs/ARCHITECTURE.md` §8.) |
+| **Phase Pré-0** | Open-Meteo : **4 conditions cumulatives** (open source, pas de pub, CC BY 4.0, attribution NOAA/ECMWF/DWD) + **fallback auto-hébergement** du serveur Open-Meteo documenté dans `README` dès maintenant. | Anticipe un dépassement de quota ou un changement de statut commercial d'Open-Meteo. La bascule vers auto-hébergement n'introduit pas de dépendance payante. |
+| **Phase Pré-0** | Reformulation de la **condition d'entrée PHASE 5** (porte a/b/c) : (a) jeu d'allumages géolocalisé à résolution compatible avec la grille, (b) stratégie d'échantillonnage négatif documentée, (c) validation temporelle par blocs battant le baseline FWI. | La provenance (BDIFF, SDIS 33, autre) devient indifférente tant que les trois conditions sont remplies. BDIFF agrégé à la commune est noté trop grossier pour cellules 250 m ; à vérifier via la consultation détaillée avant de s'engager. |
+| **Phase Pré-0** | **Webcams publiques + ML** : **hors périmètre v1**, justifié par (a) droits sur le flux, (b) RGPD sur personnes identifiables, (c) précision de détection faible → surtout faux positifs. | Évite un ticket « en attente juriste » de deux ans sans produire de valeur. Réintroduction uniquement sur cas d'usage précis + validation juridique explicite. |
+| **Phase Pré-0** | **PWA + notifications** : **garde-fou explicite** dans l'UI : « notifications informatives, sans garantie de délivrance — pour l'alerte, 18 / 112 et les canaux officiels ». Repli documenté : email ou flux RSS. | iOS ne supporte web push que pour PWA installée sur l'écran d'accueil ; cette formulation protège contre une lecture opérationnelle du push. |
