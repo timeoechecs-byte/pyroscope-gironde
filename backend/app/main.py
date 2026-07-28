@@ -8,6 +8,22 @@ PHASE 1+: middleware, routers, scheduled tasks.
   - CORS whitelist (origines autorisées uniquement).
   - slowapi : limitation de débit (CORS ne suffit pas).
   - /api/v1/status : statut public des sources (booléens seulement).
+
+⚠️ RÉGRESSION CORRIGÉE (2026-07-28) :
+  La réécriture initiale de main.py ne montait que 3 routers sur 10.
+  Cette version restaure le montage exhaustif. Voir docs/SECURITY.md
+  §Régression du freeze pour le détail de ce qui a été perdu puis
+  retrouvé.
+
+🟡 STATUT DES ENDPOINTS :
+  - hotspots, tiles, weather, alerts, crisis, export, public_api → OK
+    (routers "proxy" ou stateless — pas de dépendance à `app.science/`)
+  - fwi, risk, vegetation → MONTÉS mais leurs endpoints exposent des
+    DONNÉES FAUSSES car `app.science/` (CFFWIS, Rothermel, FBP) est
+    connu cassé d'après l'audit. Phase 2 conditionnée au harness
+    `cffdrs`. Ne PAS utiliser `/api/fwi/*`, `/api/risk/*`,
+    `/api/spread/*`, `/api/simulate`, `/api/vegetation/*` pour une
+    décision tant que ce flag n'est pas levé.
 """
 
 from __future__ import annotations
@@ -19,13 +35,28 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.routers import hotspots, tiles, weather  # routers proxy-only, phase 1
-from app.settings import get_settings
+from app.routers import (
+    alerts,
+    crisis,
+    export,
+    fwi,           # 🟡 données fausses — phase 2 conditionnée
+    hotspots,
+    public_api,
+    risk,          # 🟡 données fausses — phase 2 conditionnée
+    tiles,
+    vegetation,    # 🟡 données fausses — phase 2 conditionnée
+    weather,
+)
+from app.settings import (
+    BBOX_CALCUL,
+    BBOX_DEPARTEMENT,
+    BBOX_INGESTION,
+    get_settings,
+)
 
 # ── Structured logging ──────────────────────────────────────────────────
 structlog.configure(
@@ -77,6 +108,9 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+# Slowapi : state.limiter + exception handler. Sans le second, les dépassements
+# renvoient 500 au lieu de 429. (URGENCE 1 — main.py vérifié OK.)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -135,7 +169,11 @@ async def get_status():
 # ── Metrics scaffold ─────────────────────────────────────────────────
 @app.get("/metrics")
 async def metrics():
-    """Prometheus metrics — stub initial. Voir SPEC §10."""
+    """Prometheus metrics — stub initial. Voir SPEC §10.
+
+    5 noyaux non-négociables à câbler : data_age_seconds, ingestion_total,
+    external_api_duration_seconds, fwi_recursion_gap_days, grid_coverage_ratio.
+    """
     return {
         "status": "metrics_stub",
         "note": (
@@ -146,19 +184,7 @@ async def metrics():
     }
 
 
-# ── Routers proxy (PHASE 1) ───────────────────────────────────────────
-app.include_router(hotspots.router)
-app.include_router(tiles.router)
-app.include_router(weather.router)  # inchangé : Open-Meteo sans clé
-
-
-# ── BBOX (inchangé — diagnostic pour recherches amont) ────────────────
-from app.settings import (  # noqa: E402 — groupé en bas pour visibilité
-    BBOX_CALCUL,
-    BBOX_DEPARTEMENT,
-    BBOX_INGESTION,
-)
-
+# ── BBOX (diagnostic, sources amont) ──────────────────────────────────
 @app.get("/api/sources")
 async def get_sources():
     return {
@@ -181,3 +207,19 @@ async def get_sources():
             "lat_max": BBOX_INGESTION[3],
         },
     }
+
+
+# ── Routers (montage exhaustif — régression corrigée) ──────────────────
+# ✅ Validés : stateless/proxy, pas de dépendance à science/
+app.include_router(hotspots.router)     # /api/v1/hotspots
+app.include_router(tiles.router)        # /api/v1/tiles/sentinel/...
+app.include_router(weather.router)      # /api/weather  (Open-Meteo sans clé)
+app.include_router(alerts.router)       # /api/v1/alerts
+app.include_router(crisis.router)       # /api/v1/crisis
+app.include_router(export.router)       # /api/v1/export
+app.include_router(public_api.router)   # /api/v1/version, /health, /openapi, /docs
+
+# 🟡 Endpoints branchés sur app.science/ — DONNÉES FAUSSES jusqu'au fix Phase 2
+app.include_router(fwi.router)          # /api/fwi/current, /series
+app.include_router(risk.router)         # /api/risk/grid, /cell/{id}, /spread/grid, /simulate
+app.include_router(vegetation.router)   # /api/vegetation/fuel, /species, /elevation, /ndvi, /human
