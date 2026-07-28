@@ -41,7 +41,29 @@ export const SENTINEL_LAYERS: SentinelLayer[] = [
   },
 ];
 
-/** Construit l'URL WMS pour MapLibre avec le token */
+/**
+ * Construit l'URL WMS pour MapLibre avec le token.
+ *
+ * 🛑 STOP-GAP DE SÉCURITÉ — le token CDSE est inclus dans l'URL de la tuile.
+ * Pendant son heure de validité (TTL 1 h), le token fuit via :
+ *   - l'historique du navigateur,
+ *   - l'en-tête `Referer` envoyé au serveur cartographique,
+ *   - les logs des proxies / CDN en chemin,
+ *   - les devtools affichant les requêtes raster de MapLibre.
+ *
+ * La cible définie dans `docs/ARCHITECTURE_PROXY.md` §Niveau 3 est de
+ * proxifier les tuiles via le backend :
+ *   `/api/v1/tiles/sentinel/{layer}/{z}/{x}/{y}.png`
+ * Le navigateur n'appelle plus Copernicus qu'au travers du proxy ; le token
+ * CDSE est passé en en-tête `Authorization` côté serveur uniquement ; les
+ * images sont mises en cache 24 h car Sentinel-2 change au mieux une fois
+ * par jour.
+ *
+ * Tant que ce proxy backend n'existe pas dans ce dépôt, l'application
+ * accepte cette fenêtre d'exposition d'1 h par cycle de rafraîchissement.
+ * Quand ARCHITECTURE_PROXY.md sera implémenté, cette fonction sera
+ * supprimée et `SentinelMapLayer.tsx` pointera vers le proxy.
+ */
 export function buildWmsTileUrl(
   baseUrl: string,
   token: string,

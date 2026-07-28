@@ -150,5 +150,31 @@ dans `backend/app/`**. Douze rien que dans `cffwis.py`. Objectif : zéro.
 
 ---
 
+## Architecture cible : backend proxy
+
+Une clé ne franchit jamais la frontière du serveur. Le frontend Freebuff
+devrait, à terme, ne plus appeler NASA / CDSE / CDS directement : passer
+par un backend proxy qui détient les secrets, applique un cache Redis,
+limite le débit, et proxifie les tuiles Sentinel en passant le token OAuth
+en en-tête `Authorization` plutôt que dans l'URL.
+
+La description complète de cette cible (paramétrage `SecretStr`, sources
+backend, routers FastAPI, pré-commit gitleaks, Push Protection) est
+documentée ici :
+
+**[→ docs/ARCHITECTURE_PROXY.md](./ARCHITECTURE_PROXY.md)**
+
+Ce fichier est la référence de design tant que le backend dédié n'est pas
+implémenté. Les éléments déjà alignés sur cette cible dans le dépôt actuel :
+
+- `src/lib/sentinel.ts` — commentaire `🛑 STOP-GAP` documentant la fuite
+  du token CDSE par l'URL WMS (TTL 1 h).
+- `src/config/api-keys.ts` — ne contient plus que des getters env-only,
+  sans aucun secret en clair.
+- `src/lib/migrations/v1-purge-stale-secrets.ts` — purge one-shot des
+  secrets compromis en `localStorage`.
+
+---
+
 *Ce document est la référence unique pour toute question de sécurité du
 projet. Il n'est pas versionné — toute modification doit être revue.*
