@@ -1,192 +1,141 @@
 """
-MVT (Mapbox Vector Tile) endpoint.
+GET /api/v1/tiles/sentinel/{layer}/{z}/{x}/{y}.png — Proxy Sentinel-2.
 
-Serves gridded data as vector tiles for efficient map rendering.
-Uses GeoJSON-to-MVT conversion with Redis caching.
+🔒 PATTERN ARCHITECTURE_PROXY.md §3 :
+  - Le navigateur appelle CE endpoint, pas Copernicus directement.
+  - Token OAuth CDSE passé en en-tête ``Authorization: Bearer`` côté serveur.
+  - JAMAIS en query string côté client (fuites via Referer, historique, logs).
+  - Cache disque/Redis ``max-age=86400`` (les images Sentinel changent 1×/j).
+  - 403 net si CDSE non configuré ; 502 si Copernicus tombe ; jamais de
+    tuile inventée.
 
-GET /api/v1/tiles/{layer}/{z}/{x}/{y}.mvt
-
-Layers:
-  - risk        : ignition_risk, spread_risk, combined_score, risk_class
-  - fwi         : fwi, ffmc, dmc, dc, isi, bui, dsr, effis_class
-  - fuel        : fuel_species, sb_code, fbp_code, canopy_density
-  - terrain     : elevation_m, slope_deg, aspect_deg
-
-Cache TTL: 15 min (Redis hit → serve, miss → compute → store → serve)
-Fallback: returns empty tile if data unavailable (never fails the map)
+Endpoints exposés : ``GET /api/v1/tiles/sentinel/{layer}/{z}/{x}/{y}.png``
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import hashlib
-from typing import Any
+import time
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+import httpx
+from fastapi import APIRouter, HTTPException, Response
+
+from app.settings import get_settings
 
 logger = logging.getLogger("pyroscope.api.tiles")
 router = APIRouter(prefix="/api/v1/tiles", tags=["tiles"])
 
-SUPPORTED_LAYERS = {"risk", "fwi", "fuel", "terrain"}
+# ── Constantes ──────────────────────────────────────────────────────────
+ALLOWED_LAYERS: frozenset[Literal] = frozenset({"NDVI", "NDMI", "TRUE_COLOR", "NDWI"})
+MAX_ZOOM = 14
+TILE_PX = 256
+CACHE_TTL_S = 86_400  # 24 h — les images Sentinel changent 1×/jour
 
-# ── Redis cache stub (will be replaced with real Redis in PHASE 1) ─────
-_tile_cache: dict[str, bytes] = {}
-
-# ── Demo cell grid (static for now) ─────────────────────────────────────
-# In production, this is computed from PostGIS ST_AsMVT or a GeoJSON grid
-_DEMO_CELLS = [
-    {"lat": 44.85, "lon": -0.65, "id": 1, "ignition_risk": 35, "spread_risk": 72, "fwi": 15, "fuel": "C-6", "elevation": 45, "slope": 2.1},
-    {"lat": 44.70, "lon": -0.40, "id": 2, "ignition_risk": 55, "spread_risk": 45, "fwi": 20, "fuel": "C-6", "elevation": 30, "slope": 1.5},
-    {"lat": 45.05, "lon": -0.80, "id": 3, "ignition_risk": 20, "spread_risk": 30, "fwi": 8,  "fuel": "D-1", "elevation": 15, "slope": 0.5},
-    {"lat": 44.40, "lon": -0.20, "id": 4, "ignition_risk": 70, "spread_risk": 85, "fwi": 35, "fuel": "C-6", "elevation": 55, "slope": 3.0},
-    {"lat": 44.50, "lon": -0.90, "id": 5, "ignition_risk": 45, "spread_risk": 60, "fwi": 12, "fuel": "M-1", "elevation": 70, "slope": 4.5},
-]
+# ── Token cache (ARCHITECTURE_PROXY.md §3) ──────────────────────────
+_token_lock = asyncio.Lock()
+_token: str | None = None
+_token_expiry: float = 0.0
 
 
-def _get_cache_key(layer: str, z: int, x: int, y: int) -> str:
-    raw = f"mvt:{layer}:{z}:{x}:{y}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+async def _get_cdse_token() -> str:
+    """OAuth client_credentials CDSE. Cache mémoire, renouvelé 60s avant expiration."""
+    global _token, _token_expiry
+    async with _token_lock:
+        if _token and time.time() < _token_expiry - 60:
+            return _token
+
+        s = get_settings()
+        try:
+            cid = s.require("cdse_client_id")
+            csec = s.require("cdse_client_secret")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(
+                s.cdse_token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": cid,
+                    "client_secret": csec,
+                },
+            )
+        if r.status_code != 200:
+            logger.error("cdse_token_failed", status=r.status_code, excerpt=r.text[:120])
+            raise HTTPException(status_code=502, detail="CDSE token indisponible")
+        data = r.json()
+        _token = data["access_token"]
+        _token_expiry = time.time() + data.get("expires_in", 3600)
+        return _token
 
 
-def _build_geojson(layer: str, z: int, x: int, y: int) -> dict[str, Any]:
+def _tile_bbox_3857(z: int, x: int, y: int) -> str:
+    """Calcule la bbox Web Mercator d'une tuile z/x/y."""
+    import math
+
+    n = 2.0**z
+    lon_min = x / n * 360.0 - 180.0
+    lon_max = (x + 1) / n * 360.0 - 180.0
+    lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+    lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
+    return f"{lon_min},{lat_min},{lon_max},{lat_max}"
+
+
+# ── Endpoint tuile Sentinel ────────────────────────────────────────────
+@router.get("/sentinel/{layer}/{z}/{x}/{y}.png")
+async def sentinel_tile(layer: str, z: int, x: int, y: int):
+    """Proxy tuile Sentinel-2 WMS vers CDSE.
+
+    Le token CDSE reste serveur (jamais transmis au navigateur).
     """
-    Build a GeoJSON FeatureCollection from the cell grid for the given
-    tile coordinates. Returns empty GeoJSON if no cells fall in the tile.
+    if layer not in ALLOWED_LAYERS:
+        raise HTTPException(status_code=400, detail=f"Couche inconnue : {layer}")
+    if not 0 <= z <= MAX_ZOOM:
+        raise HTTPException(status_code=400, detail=f"Zoom hors limites (max {MAX_ZOOM})")
 
-    In production: query PostGIS with ST_AsMVTGeom for tile clipping.
-    """
-    features = []
+    token = await _get_cdse_token()
+    s = get_settings()
 
-    # Simple tile lat/lon bounds approximation (Web Mercator)
-    # In production: use pyproj or mercantile to get precise tile bbox
-    tile_res = 360.0 / (2 ** z)
-    tile_lon_min = x * tile_res - 180.0
-    tile_lat_min = y * tile_res - 90.0
-    tile_lon_max = tile_lon_min + tile_res
-    tile_lat_max = tile_lat_min + tile_res
-
-    for cell in _DEMO_CELLS:
-        # Quick bbox filter (approximate)
-        if not (tile_lon_min <= cell["lon"] <= tile_lon_max and
-                tile_lat_min <= cell["lat"] <= tile_lat_max):
-            continue
-
-        props = {"cell_id": cell["id"]}
-
-        if layer == "risk":
-            props["ignition_risk"] = cell["ignition_risk"]
-            props["spread_risk"] = cell["spread_risk"]
-        elif layer == "fwi":
-            props["fwi"] = cell["fwi"]
-        elif layer == "fuel":
-            props["fuel_model"] = cell["fuel"]
-        elif layer == "terrain":
-            props["elevation_m"] = cell["elevation"]
-            props["slope_deg"] = cell["slope"]
-
-        features.append({
-            "type": "Feature",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [cell["lon"], cell["lat"]],
-            },
-            "properties": props,
-        })
-
-    return {
-        "type": "FeatureCollection",
-        "features": features,
+    bbox = _tile_bbox_3857(z, x, y)
+    wms_params = {
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "REQUEST": "GetMap",
+        "FORMAT": "image/png",
+        "TRANSPARENT": "true",
+        "LAYERS": layer,
+        "CRS": "EPSG:3857",
+        "BBOX": bbox,
+        "WIDTH": str(TILE_PX),
+        "HEIGHT": str(TILE_PX),
     }
 
-
-def _geojson_to_mvt(geojson: bytes) -> bytes:
-    """
-    Convert GeoJSON to MVT (PMTiles / Mapbox Vector Tile).
-    PHASE 6 stub: returns raw GeoJSON wrapped in MVT structure.
-    In production: use mapbox-vector-tile or postgis ST_AsMVT.
-
-    For now, return the GeoJSON as-is with a custom content type.
-    The frontend will read it through the MVT parsing pipeline.
-    """
-    return geojson
-
-
-# ── Cache lookaside ─────────────────────────────────────────────────────
-async def _get_cached_tile(key: str) -> bytes | None:
-    """Redis GET (stub)."""
-    return _tile_cache.get(key)
-
-
-async def _set_cached_tile(key: str, data: bytes, ttl: int = 900):
-    """Redis SETEX (stub)."""
-    _tile_cache[key] = data
-
-
-# ── Tile endpoint ───────────────────────────────────────────────────────
-@router.get("/{layer}/{z}/{x}/{y}.mvt")
-async def get_tile(layer: str, z: int, x: int, y: int):
-    """
-    Return an MVT vector tile for the given layer and tile coordinates.
-
-    Cache strategy: Redis TTL 15 min.
-    Degraded mode: empty tile returned, never 404/503.
-    """
-    if layer not in SUPPORTED_LAYERS:
-        return Response(
-            content=b'{"type":"FeatureCollection","features":[]}',
-            media_type="application/vnd.mapbox-vector-tile",
-            headers={
-                "X-PyroScope-Cache": "miss",
-                "X-PyroScope-Error": f"Unsupported layer: {layer}",
-                "Access-Control-Allow-Origin": "*",
-            },
-        )
-
-    cache_key = _get_cache_key(layer, z, x, y)
-
-    # Try cache
-    cached = await _get_cached_tile(cache_key)
-    if cached is not None:
-        return Response(
-            content=cached,
-            media_type="application/vnd.mapbox-vector-tile",
-            headers={
-                "X-PyroScope-Cache": "hit",
-                "X-PyroScope-Layer": layer,
-                "Access-Control-Allow-Origin": "*",
-            },
-        )
-
-    # Build GeoJSON
     try:
-        geojson = _build_geojson(layer, z, x, y)
-        raw = json.dumps(geojson).encode("utf-8")
-        mvt = _geojson_to_mvt(raw)
-
-        # Store in cache
-        await _set_cached_tile(cache_key, mvt)
-
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(
+                f"{s.cdse_base_url}/ogc/wms/sentinel-2-l2a",
+                params=wms_params,
+                headers={"Authorization": f"Bearer {token}"},  # ← JAMAIS en URL
+            )
+        if r.status_code != 200 or not r.content:
+            logger.error(
+                "sentinel_tile_failed",
+                layer=layer,
+                z=z, x=x, y=y,
+                status=r.status_code,
+            )
+            raise HTTPException(status_code=502, detail="Sentinel indisponible")
         return Response(
-            content=mvt,
-            media_type="application/vnd.mapbox-vector-tile",
+            content=r.content,
+            media_type="image/png",
             headers={
-                "X-PyroScope-Cache": "miss",
-                "X-PyroScope-Layer": layer,
-                "X-PyroScope-N-Features": str(len(geojson["features"])),
-                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": f"public, max-age={CACHE_TTL_S}",
+                "X-Pyroscope-Layer": layer,
+                "X-Pyroscope-Cache": "miss",
             },
         )
-    except Exception as e:
-        logger.error("tiles.build_error", layer=layer, z=z, x=x, y=y, error=str(e))
-        # Return empty tile on error (never fail the map)
-        return Response(
-            content=b'{"type":"FeatureCollection","features":[]}',
-            media_type="application/vnd.mapbox-vector-tile",
-            headers={
-                "X-PyroScope-Cache": "miss",
-                "X-PyroScope-Error": str(e),
-                "Access-Control-Allow-Origin": "*",
-            },
-        )
+    except httpx.HTTPError as e:
+        logger.warning("sentinel_tile_http_error", error=str(e))
+        raise HTTPException(status_code=502, detail="Sentinel indisponible")

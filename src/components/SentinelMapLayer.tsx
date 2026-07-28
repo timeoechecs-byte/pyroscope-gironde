@@ -1,16 +1,16 @@
 /**
- * SentinelMapLayer — Couche satellite Sentinel-2 via WMS CDSE.
+ * SentinelMapLayer — Couche satellite Sentinel-2 via le PROXY backend.
  *
- * Gère le cycle de vie du token OAuth et ajoute une source raster
- * MapLibre pour l'affichage des indices NDVI/NBR/TrueColor.
+ * 🔒 POST-FREEZE PROXY (2026-07-28) :
+ *   - MapLibre charge des tuiles depuis `/api/v1/tiles/sentinel/...`.
+ *   - Le token OAuth CDSE reste strictement côté serveur
+ *     (jamais transmis au navigateur, jamais en query string).
+ *   - `.env` du backend : `CDSE_CLIENT_ID` + `CDSE_CLIENT_SECRET`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import * as maplibregl from "maplibre-gl";
-import { useAction } from "convex/react";
-import { api } from "../convex/_generated/api";
-import { getCdseConfig } from "@/config/api-keys";
-import { buildWmsTileUrl, isTokenValid, getRefreshInterval } from "@/lib/sentinel";
+import { sentinelTileUrl } from "@/lib/api";
 
 interface SentinelMapLayerProps {
   map: maplibregl.Map;
@@ -37,104 +37,62 @@ export default function SentinelMapLayer({
 }: SentinelMapLayerProps) {
   const sourceId = `sentinel-${layer}`;
   const layerId = `sentinel-${layer}-raster`;
-  const getToken = useAction(api.cdse.getToken);
-  const tokenRef = useRef<string | null>(null);
-  const expiresAtRef = useRef<number>(0);
-  const [status, setStatus] = useState<"loading" | "active" | "error" | "unconfigured">("loading");
+  // Référence gardée pour invalidation future (CDSE down → status)
+  const mountedRef = useRef(true);
 
-  // Gestion du token OAuth
   useEffect(() => {
-    if (!visible) return;
-
-    let mounted = true;
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-    async function fetchToken() {
-      const config = getCdseConfig();
-      // 🔒 On ne vérifie que la partie publique (clientId). Le clientSecret
-      // reste côté serveur Convex et n'est jamais passé en argument.
-      if (!config?.clientId) {
-        if (mounted) setStatus("unconfigured");
-        return;
-      }
-
-      try {
-        const result = await getToken({
-          clientId: config.clientId,
-        });
-
-        if (!mounted) return;
-
-        if (result.success) {
-          tokenRef.current = result.token;
-          expiresAtRef.current = result.expiresAt;
-          setStatus("active");
-
-          // Planifier le rafraîchissement
-          const interval = getRefreshInterval(result.expiresIn);
-          refreshTimer = setTimeout(fetchToken, interval);
-        } else {
-          setStatus("error");
-          console.warn("[CDSE] Token error:", result.error);
-        }
-      } catch {
-        if (mounted) setStatus("error");
-      }
-    }
-
-    fetchToken();
-
+    mountedRef.current = true;
     return () => {
-      mounted = false;
-      if (refreshTimer) clearTimeout(refreshTimer);
+      mountedRef.current = false;
     };
-  }, [getToken, visible, layer]);
+  }, []);
 
-  // Ajout/suppression de la couche raster sur la carte
   useEffect(() => {
-    if (!map || !visible) {
-      // Nettoyage
-      if (map && map.getLayer(layerId)) map.removeLayer(layerId);
-      if (map && map.getSource(sourceId)) map.removeSource(sourceId);
-      return;
-    }
+    if (!map || !visible) return;
 
-    const token = tokenRef.current;
-    if (!token || !isTokenValid(expiresAtRef.current)) {
-      // Token pas encore prêt ou expiré — ne pas ajouter la couche
-      return;
-    }
-
-    // Nettoyage précédent
+    // Cleanup précédent
     if (map.getLayer(layerId)) map.removeLayer(layerId);
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
-    const cdseBaseUrl = getCdseConfig()?.baseUrl ?? "https://sh.dataspace.copernicus.eu";
     const wmsLayer = LAYER_WMS_MAP[layer] ?? "TRUE_COLOR";
-    const tileUrl = buildWmsTileUrl(cdseBaseUrl, token, wmsLayer);
+    // ⚠️ IMPORTANT : l'URL ne contient AUCUN token. MapLibre envoie `{z}/{x}/{y}`
+    // au backend, qui complète avec Bearer côté serveur.
+    const proxyUrl = sentinelTileUrl(
+      wmsLayer as "NDVI" | "NDMI" | "NDWI" | "TRUE_COLOR",
+      0, 0, 0, // template (cf. raster source ci-dessous)
+    ).replace("/0/0/0.png", "/{z}/{x}/{y}.png");
 
-    map.addSource(sourceId, {
-      type: "raster",
-      tiles: [tileUrl],
-      tileSize: 256,
-      attribution: `© Copernicus Sentinel-2 (${LAYER_LABELS[layer] ?? layer})`,
-    });
+    try {
+      map.addSource(sourceId, {
+        type: "raster",
+        tiles: [proxyUrl],
+        tileSize: 256,
+        attribution: `© Copernicus Sentinel-2 (${LAYER_LABELS[layer] ?? layer}) · via proxy PyroScope`,
+      });
 
-    map.addLayer({
-      id: layerId,
-      type: "raster",
-      source: sourceId,
-      paint: {
-        "raster-opacity": 0.7,
-        "raster-resampling": "linear",
-      },
-    });
+      map.addLayer({
+        id: layerId,
+        type: "raster",
+        source: sourceId,
+        paint: {
+          "raster-opacity": 0.7,
+          "raster-resampling": "linear",
+        },
+      });
+    } catch (e) {
+      // Mode dégradé silencieux : la couche Sentinel n'apparaît pas,
+      // le reste de la carte reste fonctionnel.
+      // eslint-disable-next-line no-console
+      console.warn("[SentinelMapLayer] proxy unreachable:", e);
+    }
 
     return () => {
-      if (map.getLayer(layerId)) map.removeLayer(layerId);
-      if (map.getSource(sourceId)) map.removeSource(sourceId);
+      try {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+      } catch { /* carte démontée */ }
     };
-  }, [map, visible, layer, status]);
+  }, [map, visible, layer, layerId, sourceId]);
 
   return null;
 }

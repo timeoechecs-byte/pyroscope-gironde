@@ -9,11 +9,11 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "./index.css";
 
-// Migration de sécurité v1 — purge one-shot des secrets compromis en
-// localStorage (incident 2026-07-28). Doit s'exécuter AVANT tout chargement
-// applicatif pour garantir qu'aucune clé compromise ne sera relue par
-// `src/config/api-keys.ts`. Effet de bord nul si les clés sont déjà absentes.
-import "@/lib/migrations/v1-purge-stale-secrets";
+// Migration de sécurité v1 — bootstrapping de l'app post-freeze proxy.
+// L'app ne contient plus aucun secret en frontend ; la migration v1
+// (purge localStorage) est caduque et la migration v2 amorce la
+// nouvelle architecture (status public via /api/v1/status).
+import "@/lib/migrations/v2-status-bootstrap";
 
 // Components
 import LegalBanner from "@/components/LegalBanner";

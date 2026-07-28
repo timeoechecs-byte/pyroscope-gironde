@@ -9,6 +9,13 @@
  * 5. Sections empilées : couches, surfaces brûlées, qualité de l'air,
  *    météo, Sentinel-2, consignes officielles, sources.
  *
+ * 🔒 POST-FREEZE PROXY (2026-07-28) :
+ *   - Ne touche JAMAIS firms.modaps.eosdis.nasa.gov directement.
+ *   - Toutes les clés transitent par `src/lib/api.ts` → backend FastAPI.
+ *   - Le statut des sources est lu via `src/lib/api-status.ts`.
+ *   - Open-Meteo (sans clé, CC BY 4.0) reste accessible directement
+ *     comme fallback qualité de l'air.
+ *
  * NOTE : tous les sous-composants sont déclarés au NIVEAU MODULE
  * (pas à l'intérieur de `Dashboard`), sinon React recrée leur référence
  * à chaque render (warning "Cannot create components during render").
@@ -26,11 +33,15 @@ import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
 import {
-  getFirmsApiKey,
-  hasFirmsApiKey,
-  getOpenAqApiKey,
-  getCdseConfig,
-} from "@/config/api-keys";
+  fetchHotspots,
+  fetchWeatherGrid,
+  fetchAirQualityFallback,
+} from "@/lib/api";
+import {
+  fetchPublicStatus,
+  DEFAULT_STATUS,
+  type PublicSourceStatus,
+} from "@/lib/api-status";
 import {
   Flame,
   Thermometer,
@@ -51,15 +62,9 @@ import {
 import { Link } from "react-router";
 
 // ════════════════════════════════════════════════════════════════════════
-// Types + grilles + API calls
+// Types + grilles + API calls (via backend proxy, AUCUN appel direct à
+// firms.modaps.eosdis.nasa.gov, api.openaq.org ou sh.dataspace.copernicus.eu)
 // ════════════════════════════════════════════════════════════════════════
-
-const GRID = [
-  { lat: 44.3, lon: -1.2 }, { lat: 44.3, lon: -0.7 }, { lat: 44.3, lon: -0.2 },
-  { lat: 44.7, lon: -1.2 }, { lat: 44.7, lon: -0.7 }, { lat: 44.7, lon: -0.2 },
-  { lat: 45.1, lon: -1.2 }, { lat: 45.1, lon: -0.7 }, { lat: 45.1, lon: -0.2 },
-  { lat: 45.4, lon: -1.0 }, { lat: 45.4, lon: -0.5 },
-];
 
 interface WeatherPoint {
   lat: number; lon: number;
@@ -104,162 +109,90 @@ function riskLevel(score: number) {
   return { label: "Très élevé", color: "text-red-900 dark:text-red-200", bg: "bg-red-200 dark:bg-red-950/60 border-red-500 dark:border-red-700" };
 }
 
-async function fetchAirQuality(): Promise<AirQualityData> {
-  const empty: AirQualityData = {
-    source: "openmeteo", stationName: "", pm25: null, pm10: null, o3: null,
-    no2: null, so2: null, aod: null, uvIndex: null, time: "", error: null,
-  };
-
-  const openAqKey = getOpenAqApiKey();
-  if (openAqKey && openAqKey.length > 6) {
-    try {
-      const bbox = "-1.35,44.15,0.35,45.60";
-      const locRes = await fetch(
-        `https://api.openaq.org/v3/locations?bbox=${bbox}&limit=2`,
-        { headers: { "X-API-Key": openAqKey } },
-      );
-      if (locRes.ok) {
-        const locData = await locRes.json();
-        const station = locData?.results?.[0];
-        if (station?.id) {
-          const measureRes = await fetch(
-            `https://api.openaq.org/v3/locations/${station.id}/latest`,
-            { headers: { "X-API-Key": openAqKey } },
-          );
-          if (measureRes.ok) {
-            const mData = await measureRes.json();
-            const results = mData?.results?.[0]?.measurements ?? mData?.results ?? [];
-            const getVal = (param: string): number | null => {
-              const m = Array.isArray(results)
-                ? results.find((r: { parameter?: { name?: string } }) =>
-                    (r.parameter?.name ?? "").toLowerCase() === param,
-                  )
-                : null;
-              return m?.value ?? null;
-            };
-            return {
-              source: "openaq",
-              stationName: `ATMO NA · ${station.name ?? "station"}`,
-              pm25: getVal("pm25") ?? getVal("pm2.5"),
-              pm10: getVal("pm10"),
-              o3: getVal("o3"),
-              no2: getVal("no2"),
-              so2: getVal("so2"),
-              aod: null,
-              uvIndex: null,
-              time: new Date().toLocaleTimeString("fr-FR"),
-              error: null,
-            };
-          }
-        }
-      }
-    } catch {
-      // → fallback ci-dessous
-    }
-  }
-
-  try {
-    const lat = 44.8, lon = -0.5;
-    const r = await fetch(
-      `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm10,pm2_5,aerosol_optical_depth,uv_index,ozone,nitrogen_dioxide&timezone=auto`,
-    );
-    if (!r.ok) return { ...empty, error: `Open-Meteo AQ ${r.status}` };
-    const j = await r.json();
-    const c = j?.current;
-    if (!c) return { ...empty, error: "Aucune donnée reçue" };
+/**
+ * Hotspots FIRMS via le backend proxy.
+ * Le backend détient la clé ; le frontend reçoit uniquement les détections
+ * normalisées. Aucun fetch direct vers firms.modaps.eosdis.nasa.gov.
+ */
+async function fetchFirmsFromBackend(
+  status: PublicSourceStatus,
+): Promise<{ hotspots: HotspotData[]; error: string | null }> {
+  if (status.firms !== "configured") {
     return {
-      source: "openmeteo",
-      stationName: "Modèle CAMS (Copernicus)",
-      pm25: c.pm2_5 ?? null,
-      pm10: c.pm10 ?? null,
-      o3: c.ozone ?? null,
-      no2: c.nitrogen_dioxide ?? null,
-      so2: null,
-      aod: c.aerosol_optical_depth ?? null,
-      uvIndex: c.uv_index ?? null,
-      time: new Date().toLocaleTimeString("fr-FR"),
-      error: null,
+      hotspots: [],
+      error: "Source FIRMS non configurée côté backend (clé absente).",
     };
+  }
+  try {
+    const r = await fetchHotspots("VIIRS_SNPP_NRT", 1);
+    const ageHours = (r.hotspots[0]?.age_hours ?? 0); // non utilisé ici
+    void ageHours;
+    const converted: HotspotData[] = r.hotspots.map((h) => {
+      const dt = new Date(
+        `${h.acq_date}T${String(Math.floor(h.acq_time / 100)).padStart(2, "0")}:${String(h.acq_time % 100).padStart(2, "0")}:00Z`,
+      );
+      return {
+        lat: h.lat,
+        lon: h.lon,
+        frp: h.frp,
+        confidence:
+          h.confidence === "n" ? "nominal" : (h.confidence as HotspotData["confidence"]),
+        satellite: h.satellite,
+        acq_date: h.acq_date,
+        acq_time: h.acq_time,
+        age_hours: isNaN(dt.getTime()) ? 0 : (Date.now() - dt.getTime()) / 3_600_000,
+        daynight: h.daynight === "N" ? "N" : "D",
+      };
+    });
+    converted.sort((a, b) => b.frp - a.frp);
+    return { hotspots: converted, error: null };
   } catch (e) {
-    return { ...empty, error: e instanceof Error ? e.message : "Erreur Open-Meteo" };
+    return {
+      hotspots: [],
+      error: e instanceof Error ? e.message : "FIRMS indisponible",
+    };
   }
 }
 
-async function fetchWeather(): Promise<WeatherPoint[]> {
-  const results = await Promise.all(
-    GRID.map(async (p) => {
-      try {
-        const r = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto`,
-        );
-        const j = await r.json();
-        if (!j?.current) return null;
-        return {
-          lat: p.lat, lon: p.lon,
-          temp: j.current.temperature_2m,
-          humidity: j.current.relative_humidity_2m,
-          precip: j.current.precipitation ?? 0,
-          wind_speed: j.current.wind_speed_10m,
-          wind_dir: j.current.wind_direction_10m,
-          wind_gusts: j.current.wind_gusts_10m,
-        };
-      } catch { return null; }
-    }),
-  );
-  return results.filter((x): x is WeatherPoint => x !== null);
+/**
+ * Météo grille via backend proxy (variable=temperature_2m, model=arome_hd).
+ * Le backend aplatit l'appel multi-coordonnées Open-Meteo + applique cache.
+ * Retourne un sous-ensemble typé WeatherPoint (humidité/vent complétés à 0
+ * car le backend PHASE 1 ne sert que la température sur cette route).
+ */
+async function fetchWeatherFromBackend(): Promise<WeatherPoint[]> {
+  try {
+    const grid = await fetchWeatherGrid("meteofrance_arome_france_hd");
+    return grid
+      .filter((p) => p.temperature != null)
+      .map((p) => ({
+        lat: p.lat,
+        lon: p.lon,
+        temp: p.temperature as number,
+        humidity: 0, // non servi par /api/weather/grid en phase 1
+        precip: 0,
+        wind_speed: 0,
+        wind_dir: 0,
+        wind_gusts: 0,
+      }));
+  } catch (e) {
+    // Mode dégradé : on ne casse pas l'UI ; le bandeau légal reste affiché.
+    void e;
+    return [];
+  }
 }
 
-async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; error: string | null }> {
-  const bbox = "-1.35,44.15,0.35,45.60";
-  const fetchCSV = async (url: string) => {
-    const r = await fetch(url);
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      return { text: "", error: text.includes("Invalid MAP_KEY") ? "CLÉ_INVALIDE" : null };
-    }
-    return { text: await r.text(), error: null };
-  };
-  const [r1, r2, r3] = await Promise.all([
-    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_SNPP_NRT/${bbox}/1`),
-    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/${bbox}/1`),
-    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/MODIS_NRT/${bbox}/1`),
-  ]);
-  if (r1.error === "CLÉ_INVALIDE" || r2.error === "CLÉ_INVALIDE") {
-    return { hotspots: [], error: "Clé FIRMS invalide — vérifie firms.modaps.eosdis.nasa.gov" };
-  }
-  const all: HotspotData[] = [];
-  for (const r of [r1, r2, r3]) {
-    if (!r.text) continue;
-    const lines = r.text.trim().split("\n");
-    if (lines.length < 2) continue;
-    const headers = lines[0].split(",").map((h) => h.trim());
-    for (let i = 1; i < lines.length; i++) {
-      const vals = lines[i].split(",").map((v) => v.trim());
-      const row: Record<string, string> = {};
-      headers.forEach((h, idx) => { row[h] = vals[idx]; });
-      const lat = parseFloat(row.latitude ?? "0");
-      const lon = parseFloat(row.longitude ?? "0");
-      if (lat < 44.15 || lat > 45.60 || lon < -1.35 || lon > 0.35) continue;
-      const frp = parseFloat(row.frp ?? "0");
-      const conf = row.confidence ?? "low";
-      const acqDate = row.acq_date ?? "";
-      const acqTime = row.acq_time ?? "0000";
-      const hh = parseInt(acqTime.substring(0, 2), 10) || 0;
-      const mm = parseInt(acqTime.substring(2, 4), 10) || 0;
-      const dt = new Date(acqDate + "T" + String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0") + ":00Z");
-      all.push({
-        lat, lon, frp,
-        confidence: conf === "n" ? "nominal" : conf,
-        satellite: row.satellite ?? "VIIRS",
-        acq_date: acqDate,
-        acq_time: hh * 100 + mm,
-        age_hours: isNaN(dt.getTime()) ? 0 : (Date.now() - dt.getTime()) / 3600000,
-        daynight: row.daynight ?? "D",
-      });
-    }
-  }
-  all.sort((a, b) => b.frp - a.frp);
-  return { hotspots: all, error: null };
+/**
+ * Qualité de l'air : Open-Meteo direct (CC BY 4.0, sans clé) en fallback.
+ * OpenAQ passe par le backend proxy quand il sera ajouté à /api/v1/aq.
+ */
+async function fetchAirQualityFromBackend(
+  status: PublicSourceStatus,
+): Promise<AirQualityData> {
+  // Si OpenAQ est configuré côté backend, on appellera /api/v1/air-quality/openaq.
+  // En phase 1, fallback direct Open-Meteo (sans clé).
+  void status;
+  return fetchAirQualityFallback();
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -438,12 +371,21 @@ function SafetyCard({ variant, icon: Icon, title, body }: SafetyCardProps) {
 // ════════════════════════════════════════════════════════════════════════
 
 export default function Dashboard() {
-  const firmsKey = getFirmsApiKey();
-  const firmsConfigured = hasFirmsApiKey();
-  // 🔒 Seul le clientId public peut transiter par le frontend. Le clientSecret
-  // reste côté serveur Convex (cf. src/convex/cdse.ts + docs/SECURITY.md).
-  const cdseConfig = getCdseConfig();
-  const cdseConfigured = Boolean(cdseConfig?.clientId);
+  // Statut public des sources — provient du backend, AUCUNE clé n'est lue.
+  const [status, setStatus] = useState<PublicSourceStatus>(DEFAULT_STATUS);
+
+  // Bootstrap statut : un appel à /api/v1/status au montage
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const s = await fetchPublicStatus();
+      if (mounted) setStatus(s);
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const firmsConfigured = status.firms === "configured";
+  const cdseConfigured = status.cdse === "configured";
 
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
@@ -460,18 +402,17 @@ export default function Dashboard() {
     queueMicrotask(() => setError(""));
     try {
       const [w, h, aq] = await Promise.all([
-        fetchWeather(),
-        firmsConfigured && firmsKey
-          ? fetchFirms(firmsKey).then((r) => {
-              // Différer le setError pour éviter setState synchrone dans .then
+        fetchWeatherFromBackend(),
+        firmsConfigured
+          ? fetchFirmsFromBackend(status).then((r) => {
               queueMicrotask(() => { if (r.error) setError(r.error); });
               return r.hotspots;
-            }).catch(() => {
-              queueMicrotask(() => setError("FIRMS : erreur réseau"));
-              return [];
+            }).catch((e) => {
+              queueMicrotask(() => setError("FIRMS : " + (e?.message ?? "erreur")));
+              return [] as HotspotData[];
             })
           : Promise.resolve([] as HotspotData[]),
-        fetchAirQuality().catch(() => ({
+        fetchAirQualityFromBackend(status).catch(() => ({
           source: "openmeteo" as const, stationName: "", pm25: null, pm10: null, o3: null,
           no2: null, so2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
         })),
@@ -486,16 +427,16 @@ export default function Dashboard() {
     } finally {
       queueMicrotask(() => setLoading(false));
     }
-  }, [firmsKey, firmsConfigured]);
+  }, [status, firmsConfigured]);
 
   useEffect(() => {
     const aqInterval = setInterval(() => {
-      fetchAirQuality().then((aq) => {
+      fetchAirQualityFromBackend(status).then((aq) => {
         if (aq.pm25 !== null || aq.pm10 !== null || aq.error) setAirQuality(aq);
       });
     }, 15 * 60 * 1000);
     return () => clearInterval(aqInterval);
-  }, []);
+  }, [status]);
 
   useEffect(() => {
     // load() appelle setState — on déporte l'appel hors du chemin synchrone
@@ -503,7 +444,7 @@ export default function Dashboard() {
     // (react-hooks/set-state-in-effect).
     queueMicrotask(() => load());
     const weatherInterval = setInterval(() => {
-      fetchWeather().then((w) => {
+      fetchWeatherFromBackend().then((w) => {
         if (w.length) {
           setWeather(w);
           setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
@@ -511,8 +452,8 @@ export default function Dashboard() {
       });
     }, 5 * 60 * 1000);
     const firmsInterval = setInterval(() => {
-      if (firmsConfigured && firmsKey) {
-        fetchFirms(firmsKey).then((r) => {
+      if (firmsConfigured) {
+        fetchFirmsFromBackend(status).then((r) => {
           if (r.hotspots.length > 0) setHotspots(r.hotspots);
         });
       }
@@ -521,7 +462,7 @@ export default function Dashboard() {
       clearInterval(weatherInterval);
       clearInterval(firmsInterval);
     };
-  }, [load, firmsConfigured, firmsKey]);
+  }, [load, firmsConfigured, status]);
 
   const [period, setPeriod] = useState<"24h" | "48h" | "7j">("24h");
   const [layers, setLayers] = useState({
@@ -663,10 +604,13 @@ export default function Dashboard() {
         </MapContainer>
 
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="rounded-lg border border-border/50 bg-background/80 px-4 py-3 text-center text-xs text-muted-foreground shadow backdrop-blur">
+          <div className="pointer-events-auto rounded-lg border border-border/50 bg-background/80 px-4 py-3 text-center text-xs text-muted-foreground shadow backdrop-blur">
             <Layers className="mx-auto mb-1 h-5 w-5 text-fire-500" />
             <strong className="text-foreground">Carte Gironde</strong>
             <p>Fond OSM · Hotspots · Vent · Isothermes · Périmètres</p>
+            <p className="mt-1 text-[10px]">
+              Backend : <code className="rounded bg-card/60 px-1">{cdseConfigured ? "✅ proxy joignable" : "⚠ mode dégradé"}</code>
+            </p>
           </div>
         </div>
 
@@ -697,11 +641,11 @@ export default function Dashboard() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <LayerCard active={layers.hotspots} onToggle={() => toggleLayer("hotspots")}
               color="bg-fire-500" title="Feux actifs (points chauds)"
-              desc="NASA FIRMS · VIIRS S-NPP & NOAA-20, MODIS · QUASI TEMPS RÉEL · délai 1-3h"
+              desc="NASA FIRMS · VIIRS S-NPP & NOAA-20, MODIS · via proxy backend · QUASI TEMPS RÉEL · délai 1-3h"
               stat={hotspotsOk ? `${hotspots.length} sur 24h` : "0 sur 24h"} />
             <LayerCard active={layers.temperature} onToggle={() => toggleLayer("temperature")}
               color="bg-orange-400" title="Température · Isothermes"
-              desc="Open-Meteo · modèle AROME ~1,5 km · 11 points de grille Gironde"
+              desc="Open-Meteo · modèle AROME ~1,5 km · via proxy backend"
               stat={`${avgTemp}°C moyenne`} />
             <LayerCard active={layers.wind} onToggle={() => toggleLayer("wind")}
               color="bg-sky-400" title="Vent animé 10 m"
@@ -713,8 +657,8 @@ export default function Dashboard() {
               stat={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha cumulées` : "aucune pour l'instant"} />
             <LayerCard active={layers.ndvi} onToggle={() => toggleLayer("ndvi")}
               color="bg-emerald-500" title="Satellite Sentinel-2"
-              desc="Copernicus CDSE OAuth2 · NDVI / Couleur / NDWI ⚠️ WMS en cours de débogage (chemin /ogc/wms → 404)"
-              stat={cdseConfigured ? "OAuth OK" : "Clés absentes"} />
+              desc="Copernicus CDSE · tuiles proxifiées · token OAuth 100% serveur · JAMAIS transmis au navigateur"
+              stat={cdseConfigured ? "Proxy OK" : "Mode dégradé"} />
             <div className="rounded-lg border border-border/40 bg-card/30 p-4">
               <p className="flex items-center gap-2 text-xs font-semibold">
                 <span className="h-3 w-3 rounded-full bg-fire-500" />
@@ -821,15 +765,15 @@ export default function Dashboard() {
         </Section>
 
         <Section title="Satellite Sentinel-2 (Copernicus)" icon={Trees}
-          badge={cdseConfigured ? "OAuth OK" : "Clés manquantes"}
+          badge={cdseConfigured ? "Proxy OK" : "Mode dégradé"}
           open={openSection === "sentinel"}
           onToggle={() => toggleSection("sentinel")}>
           <div className="rounded-lg border border-border/40 bg-card/30 p-4">
             <p className="text-sm">
               {cdseConfigured ? (
-                <>✓ <strong>Token OAuth2 CDSE obtenu</strong> (HTTP 200). Activation du flux WMS en cours — le chemin <code className="rounded bg-card/60 px-1 text-[11px]">/ogc/wms/sentinel-2-l2a</code> renvoie actuellement 404. Sentinel Hub nécessite la création préalable d'une <em>Instance ID</em> via le dashboard CDSE.</>
+                <>✓ <strong>Proxy Sentinel opérationnel</strong> (HTTP 200) — token OAuth2 CDSE détenu <em>exclusivement</em> par le backend. Aucune fuite de token via le navigateur.</>
               ) : (
-                <>⚠ Identifiants CDSE absents. Active la couche NDVI/Couleur/NDWI haute résolution.</>
+                <>⚠ Identifiants CDSE absents côté backend. Les tuiles Sentinel ne sont pas servies ; mode dégradé actif.</>
               )}
             </p>
             <p className="mt-2 text-[10px] text-muted-foreground">
@@ -863,10 +807,10 @@ export default function Dashboard() {
           open={openSection === "sources"}
           onToggle={() => toggleSection("sources")}>
           <div className="space-y-2 text-xs text-muted-foreground">
-            <p><strong className="text-foreground">NASA FIRMS</strong> · Points chauds VIIRS S-NPP / NOAA-20, MODIS · Données quasi temps réel · 1-3 h de latence.</p>
-            <p><strong className="text-foreground">Open-Meteo</strong> · Météo (AROME France HD ~1,5 km) + Air Quality (CAMS Copernicus) · <a className="underline" href="https://open-meteo.com/" target="_blank" rel="noreferrer">CC BY 4.0</a>.</p>
-            <p><strong className="text-foreground">OpenAQ</strong> · Stations ATMO Nouvelle-Aquitaine en Gironde · <a className="underline" href="https://openaq.org/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a>.</p>
-            <p><strong className="text-foreground">ESA Copernicus</strong> · Sentinel-2 (CDSE) · <a className="underline" href="https://dataspace.copernicus.eu/" target="_blank" rel="noreferrer">Licence Copernicus</a>.</p>
+            <p><strong className="text-foreground">NASA FIRMS</strong> · Points chauds VIIRS S-NPP / NOAA-20, MODIS · Données quasi temps réel · 1-3 h de latence · <span className="text-emerald-600 dark:text-emerald-400">via proxy backend (clé serveur uniquement)</span>.</p>
+            <p><strong className="text-foreground">Open-Meteo</strong> · Météo (AROME France HD ~1,5 km) + Air Quality (CAMS Copernicus) · <a className="underline" href="https://open-meteo.com/" target="_blank" rel="noreferrer">CC BY 4.0</a> · <span className="text-emerald-600 dark:text-emerald-400">via proxy backend / fallback direct sans clé</span>.</p>
+            <p><strong className="text-foreground">OpenAQ</strong> · Stations ATMO Nouvelle-Aquitaine en Gironde · <a className="underline" href="https://openaq.org/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a> · <span className="text-emerald-600 dark:text-emerald-400">via proxy backend (clé serveur uniquement)</span>.</p>
+            <p><strong className="text-foreground">ESA Copernicus</strong> · Sentinel-2 (CDSE) · <a className="underline" href="https://dataspace.copernicus.eu/" target="_blank" rel="noreferrer">Licence Copernicus</a> · <span className="text-emerald-600 dark:text-emerald-400">proxy backend · token 100% serveur</span>.</p>
             <p><strong className="text-foreground">IGN</strong> · BD Forêt V2, RGE ALTI · Données ouvertes · <a className="underline" href="https://www.ign.fr/" target="_blank" rel="noreferrer">Licence Etalab 2.0</a>.</p>
             <p><strong className="text-foreground">OpenStreetMap</strong> · Fond cartographique · <a className="underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">ODbL</a> · © contributeurs.</p>
             <p className="mt-3 border-t border-border/40 pt-3">

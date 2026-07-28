@@ -1,39 +1,50 @@
 """
 NASA FIRMS — Fire Information for Resource Management System.
 
+🔒 La clé FIRMS est lue depuis ``Settings.firms_map_key`` (``SecretStr``).
+Le constructeur n'accepte plus de clé en argument : la sécurité ne dépend
+plus de la diligence de l'appelant.
+
 Products: VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT, VIIRS_NOAA21_NRT, MODIS_NRT.
-Free API key via firms.modaps.eosdis.nasa.gov.
+Quota: 2 000 req/jour gratuit via firms.modaps.eosdis.nasa.gov/api/map_key.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
-from app.sources.base import BaseSource, SourceStatus
+from app.settings import get_settings
 
-# ── Data models ─────────────────────────────────────────────────────────
+logger = logging.getLogger("pyroscope.sources.firms")
+
+FIRMS_PRODUCTS = frozenset(
+    {"VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"}
+)
 
 
 @dataclass
 class Hotspot:
-    """Single fire detection point from FIRMS."""
+    """Détection FIRMS typée."""
 
     latitude: float
     longitude: float
-    acq_date: str  # YYYY-MM-DD
-    acq_time: int  # HHMM
+    acq_date: str
+    acq_time: int
     satellite: str
-    confidence: str  # low / nominal / high
-    frp: float  # Fire Radiative Power (MW)
-    daynight: str  # D / N
-    bright_ti4: float | None = None  # K, VIIRS channel I-4
-    bright_ti5: float | None = None  # K, VIIRS channel I-5
+    confidence: str
+    frp: float
+    daynight: str
+    bright_ti4: float | None = None
+    bright_ti5: float | None = None
+
+    def __post_init__(self) -> None:
+        if not -90 <= self.latitude <= 90 or not -180 <= self.longitude <= 180:
+            raise ValueError(f"Hors plage : lat={self.latitude} lon={self.longitude}")
 
     @property
     def acquired_at(self) -> datetime:
-        """Parse acq_date + acq_time into a datetime."""
         hour = self.acq_time // 100
         minute = self.acq_time % 100
         return datetime.strptime(self.acq_date, "%Y-%m-%d").replace(
@@ -42,139 +53,41 @@ class Hotspot:
 
     @property
     def age_hours(self) -> float:
-        """Age in hours relative to now."""
         return (datetime.now(timezone.utc) - self.acquired_at).total_seconds() / 3600
 
 
-@dataclass
-class FirmsResponse:
-    """Typed FIRMS API response."""
+class FirmsSource:
+    """Connecteur FIRMS singleton.
 
-    hotspots: list[Hotspot]
-    source: SourceStatus
-    raw_count: int
+    ⚠️ Cette classe ne reçoit plus la clé en argument : elle lit
+    ``Settings.firms_map_key``. Un dépassement de quota reste possible
+    si l'appelant boucle ; mitigation : cache Redis côté router.
+    """
 
+    BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
+    QUOTA_LIMIT_DAILY = 2_000
 
-# ── Connector ────────────────────────────────────────────────────────────
+    def __init__(self) -> None:
+        # Source d'autorité unique pour la clé : ``Settings``.
+        self._key = get_settings().require("firms_map_key")
+        self._quota_used = 0
 
+    @property
+    def quota_used(self) -> int:
+        return self._quota_used
 
-class FirmsSource(BaseSource):
-    """NASA FIRMS hotspot connector."""
+    @classmethod
+    def from_settings(cls) -> "FirmsSource":
+        """Factory back-compat avec les appels existants."""
+        return cls()
 
-    FIRMS_PRODUCTS = [
-        "VIIRS_SNPP_NRT",
-        "VIIRS_NOAA20_NRT",
-        "VIIRS_NOAA21_NRT",
-        "MODIS_NRT",
-    ]
-
-    def __init__(self, api_key: str):
-        super().__init__(
-            name="firms",
-            base_url="https://firms.modaps.eosdis.nasa.gov/api/area/csv",
-            cache_ttl=900,  # 15 min — matches ingestion cadence
-            rate_per_second=5.0,
-        )
-        self.api_key = api_key
-        self._quota_limit = 2000  # FIRMS Map Key: 2000 req/day
-
-    async def fetch(
-        self,
-        bbox: tuple[float, float, float, float],
-        days: int = 7,
-        products: list[str] | None = None,
-    ) -> FirmsResponse:
+    def build_url(
+        self, sensor: str, bbox: tuple[float, float, float, float], days: int
+    ) -> str:
+        """Compose l'URL. La méthode existe pour les tests : JAMAIS
+        ``log.info(url=...)`` ailleurs, la clé est dans le path.
         """
-        Fetch hotspots across specified products.
-
-        Args:
-            bbox: (lon_min, lat_min, lon_max, lat_max)
-            days: Number of days to look back (max 30 for NRT)
-            products: Which products to query (default: all 4)
-        """
-        products = products or self.FIRMS_PRODUCTS
-        lon_min, lat_min, lon_max, lat_max = bbox
-
-        all_hotspots: list[Hotspot] = []
-
-        for product in products:
-            cache_key = self._cache_key(
-                product, str(lon_min), str(lat_min), str(lon_max), str(lat_max), str(days)
-            )
-
-            # Try cache first
-            cached = await self._cache_get(cache_key)
-            if cached:
-                hotspots = [Hotspot(**h) for h in cached]
-                all_hotspots.extend(hotspots)
-                continue
-
-            # Fetch from API
-            params = {
-                "api_key": self.api_key,
-                "area": f"{lon_min},{lat_min},{lon_max},{lat_max}",
-                "days": str(days),
-            }
-
-            try:
-                data = await self._request("GET", f"{product}/1", params=params)
-
-                # FIRMS CSV returns a list of dicts
-                if isinstance(data, list):
-                    for row in data:
-                        try:
-                            hotspot = Hotspot(
-                                latitude=float(row.get("latitude", 0)),
-                                longitude=float(row.get("longitude", 0)),
-                                acq_date=row.get("acq_date", ""),
-                                acq_time=int(row.get("acq_time", 0)),
-                                satellite=row.get("satellite", ""),
-                                confidence=row.get("confidence", "low"),
-                                frp=float(row.get("frp", 0)),
-                                daynight=row.get("daynight", "D"),
-                                bright_ti4=(
-                                    float(row["bright_ti4"])
-                                    if row.get("bright_ti4")
-                                    else None
-                                ),
-                                bright_ti5=(
-                                    float(row["bright_ti5"])
-                                    if row.get("bright_ti5")
-                                    else None
-                                ),
-                            )
-                            all_hotspots.append(hotspot)
-                        except (ValueError, KeyError) as e:
-                            logger.warning(
-                                "firms.parse_error",
-                                product=product,
-                                error=str(e),
-                            )
-
-                # Cache the result
-                await self._cache_set(
-                    cache_key, [h.__dict__ for h in all_hotspots], self.cache_ttl
-                )
-
-            except Exception as e:
-                logger.error("firms.fetch_error", product=product, error=str(e))
-
-        return FirmsResponse(
-            hotspots=all_hotspots,
-            source=self._build_status(available=len(all_hotspots) > 0, latency=0),
-            raw_count=len(all_hotspots),
-        )
-
-
-# ── Module-level factory ────────────────────────────────────────────────
-_firms_instance: FirmsSource | None = None
-
-
-def get_firms_source(api_key: str | None = None) -> FirmsSource:
-    """Singleton factory for FirmsSource."""
-    global _firms_instance
-    if _firms_instance is None:
-        if not api_key:
-            raise ValueError("NASA_FIRMS_API_KEY is required")
-        _firms_instance = FirmsSource(api_key)
-    return _firms_instance
+        if sensor not in FIRMS_PRODUCTS:
+            raise ValueError(f"Capteur inconnu : {sensor}")
+        w, so, e, n = bbox
+        return f"{self.BASE_URL}/{self._key}/{sensor}/{w},{so},{e},{n}/{days}"

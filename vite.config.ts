@@ -5,17 +5,12 @@ import path from "path";
 import { defineConfig } from "vite";
 
 // https://vite.dev/config/
+// 🔒 ARCHITECTURE PROXY : aucun secret injecté au build.
+//    `VITE_API_URL` reste l'unique VITE_* légitime (URL publique du
+//    backend, jamais une clé d'API). Les autres VITE_* ne sont plus
+//    définies ici : le bundle ne contient aucune valeur sensible.
 export default defineConfig({
   plugins: [react(), vlyPlugin(), tailwindcss()],
-  define: {
-    // Expose VITE_ env vars as globals (résolu au serve time, pas build time)
-    __VITE_FIRMS_API_KEY__: JSON.stringify(process.env.VITE_FIRMS_API_KEY || ""),
-    __VITE_OPENAQ_API_KEY__: JSON.stringify(process.env.VITE_OPENAQ_API_KEY || ""),
-    __VITE_CDSE_BASE_URL__: JSON.stringify(process.env.VITE_CDSE_BASE_URL || ""),
-    __VITE_CDSE_CLIENT_ID__: JSON.stringify(process.env.VITE_CDSE_CLIENT_ID || ""),
-    __VITE_CDSE_CLIENT_SECRET__: JSON.stringify(process.env.VITE_CDSE_CLIENT_SECRET || ""),
-    __VITE_CDS_API_TOKEN__: JSON.stringify(process.env.VITE_CDS_API_TOKEN || ""),
-  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

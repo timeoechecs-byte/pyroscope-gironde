@@ -1,8 +1,13 @@
 """
 PyroScope 33 — FastAPI application entry point.
 
-PHASE 0: health endpoint, metrics scaffold.
+PHASE 0: health, metrics, structured logging.
 PHASE 1+: middleware, routers, scheduled tasks.
+
+🔒 ARCHITECTURE_PROXY.md strict :
+  - CORS whitelist (origines autorisées uniquement).
+  - slowapi : limitation de débit (CORS ne suffit pas).
+  - /api/v1/status : statut public des sources (booléens seulement).
 """
 
 from __future__ import annotations
@@ -13,10 +18,14 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from app.routers import alerts, crisis, export, fwi, hotspots, public_api, risk, tiles, vegetation, weather
-from app.settings import BBOX_CALCUL, BBOX_DEPARTEMENT, BBOX_INGESTION, settings
+from app.routers import hotspots, tiles, weather  # routers proxy-only, phase 1
+from app.settings import get_settings
 
 # ── Structured logging ──────────────────────────────────────────────────
 structlog.configure(
@@ -31,12 +40,28 @@ structlog.configure(
 )
 logger = structlog.get_logger()
 
+# ── Rate limiter (ARCHITECTURE_PROXY.md §4) ────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
 
 # ── Lifecycle ───────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: startup & shutdown."""
+    settings = get_settings()
     logger.info("pyroscope_startup", environment=settings.ENVIRONMENT)
+
+    # Garde-fou : on NE refuse PAS de démarrer si une clé est absente.
+    # Le mode dégradé est un comportement attendu et documenté (SPEC §2).
+    # L'opérateur voit un warning structuré dans le log.
+    status = settings.public_status()
+    for source, configured in status.items():
+        if not configured:
+            logger.warning(
+                "source_unconfigured",
+                source=source,
+                msg="Mode dégradé actif pour cette source",
+            )
+
     yield
     logger.info("pyroscope_shutdown")
 
@@ -46,10 +71,24 @@ app = FastAPI(
     title="PyroScope 33",
     version="0.1.0",
     description=(
-        "Suivi et évaluation du risque d'incendie de forêt — Gironde (France)."
-        " ⚠️ Outil expérimental, sans valeur opérationnelle."
+        "Suivi et évaluation du risque d'incendie de forêt — Gironde (France). "
+        "⚠️ Outil expérimental, sans valeur opérationnelle. "
+        "Voir docs/SECURITY.md et le bandeau légal rendu sur toutes les pages."
     ),
     lifespan=lifespan,
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ── CORS — whitelist explicite (ARCHITECTURE_PROXY.md §4) ────────────
+settings_at_startup = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings_at_startup.CORS_ALLOWED_ORIGINS,
+    allow_methods=["GET"],  # lecture seule côté public
+    allow_headers=["*"],
+    allow_credentials=False,
 )
 
 
@@ -72,74 +111,56 @@ async def log_requests(request: Request, call_next):
 # ── Health endpoint ─────────────────────────────────────────────────────
 @app.get("/healthz")
 async def healthz():
-    """Health check. Returns OK when DB & Redis respond (PHASE 0 stub)."""
+    """Health check. Renvoie OK dès que l'app répond."""
     return {
         "status": "ok",
         "version": "0.1.0",
-        "environment": settings.ENVIRONMENT,
+        "environment": settings_at_startup.ENVIRONMENT,
     }
 
 
-# ── Metrics scaffold (PHASE 0: 5 core metrics at zero) ─────────────────
-@app.get("/metrics")
-async def metrics():
-    """
-    Prometheus metrics endpoint.
+# ── Public source status (no secrets, only booleans) ───────────────────
+@app.get("/api/v1/status")
+async def get_status():
+    """Statut public des sources — utilisé par le frontend pour adapter l'UI.
 
-    PHASE 0 stub — 5 core metrics registered at zero.
-    Real instrumentation in PHASE 1 via prometheus_fastapi_instrumentator.
+    Renvoie UNIQUEMENT des booléens. Aucun token, aucune clé, aucun quota.
     """
     return {
-        "status": "metrics_stub",
-        "note": "5 core metrics registered at zero until PHASE 1 instrumentator",
-        "metrics": [
-            "# HELP data_age_seconds Age of the most recent data per source.",
-            "# TYPE data_age_seconds gauge",
-            'data_age_seconds{source="firms"} 0',
-            'data_age_seconds{source="open_meteo"} 0',
-            "# HELP ingestion_total Successful/errored ingestions per source.",
-            "# TYPE ingestion_total counter",
-            'ingestion_total{source="firms",status="success"} 0',
-            'ingestion_total{source="firms",status="error"} 0',
-            'ingestion_total{source="open_meteo",status="success"} 0',
-            'ingestion_total{source="open_meteo",status="error"} 0',
-            "# HELP external_api_duration_seconds API call duration per source.",
-            "# TYPE external_api_duration_seconds histogram",
-            'external_api_duration_seconds{source="firms"} 0',
-            'external_api_duration_seconds{source="open_meteo"} 0',
-            "# HELP external_api_quota_used Quota used per source.",
-            "# TYPE external_api_quota_used gauge",
-            'external_api_quota_used{source="firms"} 0',
-            'external_api_quota_used{source="open_meteo"} 0',
-            "# HELP external_api_quota_limit Quota limit per source.",
-            "# TYPE external_api_quota_limit gauge",
-            'external_api_quota_limit{source="firms"} 0',
-            'external_api_quota_limit{source="open_meteo"} 0',
-            "# HELP grid_coverage_ratio Fraction of cells with valid data.",
-            "# TYPE grid_coverage_ratio gauge",
-            'grid_coverage_ratio{layer="hotspots"} 0',
-            'grid_coverage_ratio{layer="weather"} 0',
-        ],
+        "version": "0.1.0",
+        "sources": settings_at_startup.public_status(),
     }
 
 
-# ── Register routers (PHASE 1) ─────────────────────────────────────────
+# ── Metrics scaffold ─────────────────────────────────────────────────
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics — stub initial. Voir SPEC §10."""
+    return {
+        "status": "metrics_stub",
+        "note": (
+            "5 noyaux non-négociables : data_age_seconds, ingestion_total, "
+            "external_api_duration_seconds, fwi_recursion_gap_days, "
+            "grid_coverage_ratio. (SPEC §10)"
+        ),
+    }
+
+
+# ── Routers proxy (PHASE 1) ───────────────────────────────────────────
 app.include_router(hotspots.router)
-app.include_router(weather.router)
-app.include_router(fwi.router)
-app.include_router(vegetation.router)
-app.include_router(risk.router)
-app.include_router(crisis.router)
-app.include_router(alerts.router)
 app.include_router(tiles.router)
-app.include_router(public_api.router)
-app.include_router(export.router)
+app.include_router(weather.router)  # inchangé : Open-Meteo sans clé
 
 
-# ── Endpoint: source configuration (BBOX) ──────────────────────────────
+# ── BBOX (inchangé — diagnostic pour recherches amont) ────────────────
+from app.settings import (  # noqa: E402 — groupé en bas pour visibilité
+    BBOX_CALCUL,
+    BBOX_DEPARTEMENT,
+    BBOX_INGESTION,
+)
+
 @app.get("/api/sources")
 async def get_sources():
-    """Return bounding boxes and configuration for each source."""
     return {
         "bbox_departement": {
             "lon_min": BBOX_DEPARTEMENT[0],
@@ -158,9 +179,5 @@ async def get_sources():
             "lat_min": BBOX_INGESTION[1],
             "lon_max": BBOX_INGESTION[2],
             "lat_max": BBOX_INGESTION[3],
-        },
-        "sources": {
-            "firms": {"status": "not_configured", "quota_used": 0},
-            "open_meteo": {"status": "not_configured", "quota_used": 0},
         },
     }
