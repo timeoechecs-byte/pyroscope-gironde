@@ -25,7 +25,7 @@ export interface ApiKeys {
 
 const HARDCODED: ApiKeys = {
   firms: "3622edb968086a7ed8d44e197cfdde1c",
-  openaq: "d25911226286cc6d6523b3384e85b23a82f4533d7d2bf56076adbaf54b485c14",
+  openaq: "559ecdb2dd79ca22d17d13da255e5c7624e1b61b6945c9c0820fe999f8b712f8",
   cdseClientId: "sh-a9b0ecc2-52bc-4888-9854-b9b9e9e560e0",
   cdseClientSecret: "cihDUelg3NyeY24lPBLAC6mVZy6F9dZR",
   cdseBaseUrl: "https://sh.dataspace.copernicus.eu",

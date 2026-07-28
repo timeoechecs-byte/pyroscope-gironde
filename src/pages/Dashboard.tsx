@@ -18,7 +18,7 @@ import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
-import { getFirmsApiKey, hasFirmsApiKey, getCdseConfig } from "@/config/api-keys";
+import { getFirmsApiKey, hasFirmsApiKey, getOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -79,10 +79,13 @@ function riskLevel(score: number): { label: string; color: string; bg: string } 
 // ── Air Quality types ─────────────────────────────────────────────────
 
 interface AirQualityData {
+  source: "openaq" | "openmeteo";
+  stationName: string;
   pm25: number | null;
   pm10: number | null;
   o3: number | null;
   no2: number | null;
+  so2: number | null;
   aod: number | null;
   uvIndex: number | null;
   time: string;
@@ -92,10 +95,63 @@ interface AirQualityData {
 // ── API calls ──────────────────────────────────────────────────────────
 
 async function fetchAirQuality(): Promise<AirQualityData> {
-  const empty: AirQualityData = { pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null };
+  const empty: AirQualityData = {
+    source: "openmeteo", stationName: "", pm25: null, pm10: null, o3: null,
+    no2: null, so2: null, aod: null, uvIndex: null, time: "", error: null,
+  };
+
+  // 1. TENTATIVE OPENAQ (stations ATMO Nouvelle-Aquitaine en Gironde, plus de polluants)
+  const openAqKey = getOpenAqApiKey();
+  if (openAqKey && openAqKey.length > 6) {
+    try {
+      const bbox = "-1.35,44.15,0.35,45.60";
+      const locRes = await fetch(
+        `https://api.openaq.org/v3/locations?bbox=${bbox}&limit=2`,
+        { headers: { "X-API-Key": openAqKey } },
+      );
+      if (locRes.ok) {
+        const locData = await locRes.json();
+        const station = locData?.results?.[0];
+        if (station?.id) {
+          // Récupération mesures de la 1ère station trouvée
+          const measureRes = await fetch(
+            `https://api.openaq.org/v3/locations/${station.id}/latest`,
+            { headers: { "X-API-Key": openAqKey } },
+          );
+          if (measureRes.ok) {
+            const mData = await measureRes.json();
+            const results = mData?.results?.[0]?.measurements ?? mData?.results ?? [];
+            const getVal = (param: string): number | null => {
+              const m = Array.isArray(results)
+                ? results.find((r: { parameter?: { name?: string } }) =>
+                    (r.parameter?.name ?? "").toLowerCase() === param,
+                  )
+                : null;
+              return m?.value ?? null;
+            };
+            return {
+              source: "openaq",
+              stationName: `ATMO NA · ${station.name ?? "station"}`,
+              pm25: getVal("pm25") ?? getVal("pm2.5"),
+              pm10: getVal("pm10"),
+              o3: getVal("o3"),
+              no2: getVal("no2"),
+              so2: getVal("so2"),
+              aod: null,
+              uvIndex: null,
+              time: new Date().toLocaleTimeString("fr-FR"),
+              error: null,
+            };
+          }
+        }
+      }
+    } catch {
+      // On tombe sur le fallback Open-Meteo ci-dessous, sans silencieux
+    }
+  }
+
+  // 2. FALLBACK OPEN-METEO (modele CAMS Copernicus, sans cle, si OpenAQ echoue)
   try {
-    // Open-Meteo Air Quality (gratuit, sans clé, basé sur CAMS Copernicus).
-    // Remplace OpenAQ v3 qui refusait toutes les clés soumises.
     const lat = 44.8, lon = -0.5;
     const r = await fetch(
       `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm10,pm2_5,aerosol_optical_depth,uv_index,ozone,nitrogen_dioxide&timezone=auto`,
@@ -105,17 +161,20 @@ async function fetchAirQuality(): Promise<AirQualityData> {
     const c = j?.current;
     if (!c) return { ...empty, error: "Aucune donnée reçue" };
     return {
+      source: "openmeteo",
+      stationName: "Modèle CAMS (Copernicus)",
       pm25: c.pm2_5 ?? null,
       pm10: c.pm10 ?? null,
       o3: c.ozone ?? null,
       no2: c.nitrogen_dioxide ?? null,
+      so2: null,
       aod: c.aerosol_optical_depth ?? null,
       uvIndex: c.uv_index ?? null,
       time: new Date().toLocaleTimeString("fr-FR"),
       error: null,
     };
   } catch (e) {
-    return { ...empty, error: e instanceof Error ? e.message : "Erreur réseau Open-Meteo" };
+    return { ...empty, error: e instanceof Error ? e.message : "Erreur Open-Meteo" };
   }
 }
 
@@ -214,7 +273,10 @@ export default function Dashboard() {
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
-  const [airQuality, setAirQuality] = useState<AirQualityData>({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null });
+  const [airQuality, setAirQuality] = useState<AirQualityData>({
+    source: "openmeteo", stationName: "", pm25: null, pm10: null, o3: null,
+    no2: null, so2: null, aod: null, uvIndex: null, time: "", error: null,
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -234,7 +296,8 @@ export default function Dashboard() {
             })
           : Promise.resolve([] as HotspotData[]),
         fetchAirQuality().catch(() => ({
-          pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
+          source: "openmeteo" as const, stationName: "", pm25: null, pm10: null, o3: null,
+          no2: null, so2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
         })),
       ]);
       setWeather(w);
@@ -540,19 +603,21 @@ export default function Dashboard() {
               <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {weatherTime}</p>
             </div>
 
-            {/* Qualité de l'air — Open-Meteo Air Quality (gratuit, sans cle, base CAMS Copernicus) */}
+            {/* Qualité de l'air : OpenAQ (principal, stations ATMO NA) + fallback Open-Meteo (CAMS) */}
             <div
               data-source-status={airQuality.error ? "error" : (airQuality.pm25 !== null || airQuality.pm10 !== null) ? "ok" : "unavailable"}
               className={`rounded border p-2.5 transition-colors ${
-                airQuality.error
-                  ? "border-red-900/40 bg-red-950/10"
-                  : "border-border/40"
+                airQuality.error ? "border-red-900/40 bg-red-950/10" : "border-border/40"
               }`}
             >
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air (Open-Meteo)
+                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air locale
               </p>
-              <p className="text-[9px] text-green-600/70">✓ Sans clé, données CAMS Copernicus directes</p>
+              {airQuality.source === "openaq" ? (
+                <p className="text-[9px] text-green-600/70">✓ OpenAQ · {airQuality.stationName}</p>
+              ) : (
+                <p className="text-[9px] text-yellow-600/70">⚠ Fallback · {airQuality.stationName || "Open-Meteo"}</p>
+              )}
               {airQuality.error ? (
                 <p className="text-[9px] text-red-400 font-medium mt-1">⚠ {airQuality.error}</p>
               ) : airQuality.pm25 === null && airQuality.pm10 === null ? (
@@ -572,6 +637,9 @@ export default function Dashboard() {
                     <span>
                       NO₂ : {airQuality.no2 !== null ? `${airQuality.no2.toFixed(1)} µg/m³` : "—"}
                     </span>
+                    {airQuality.so2 !== null && (
+                      <span>SO₂ : {airQuality.so2.toFixed(1)} µg/m³</span>
+                    )}
                     {airQuality.aod !== null && (
                       <span>AOD : {airQuality.aod.toFixed(3)}</span>
                     )}
