@@ -16,7 +16,7 @@ export default function LegalBanner() {
   return (
     <div
       role="alert"
-      className="relative z-[9999] w-full bg-destructive/10 dark:bg-destructive/20 border-b border-destructive/20"
+      className="sticky top-0 z-[9999] w-full bg-destructive/15 backdrop-blur supports-[backdrop-filter]:bg-destructive/20 border-b-2 border-destructive/40 shadow-sm"
     >
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 text-xs sm:text-sm">
         <AlertTriangle className="h-4 w-4 shrink-0 text-destructive sm:h-5 sm:w-5" />

@@ -124,13 +124,15 @@ createRoot(document.getElementById("root")!).render(
           <RouteSyncer />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
-              <Route path="/" element={<Landing />} />
+              {/* Carte en accès libre — pas de compte requis (carte = bien commun). */}
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/about" element={<Landing />} />
               <Route
                 path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
+                element={<AuthPage redirectAfterAuth="/account" />}
               />
               <Route
-                path="/dashboard"
+                path="/account"
                 element={
                   <RequireAuth>
                     <Dashboard />

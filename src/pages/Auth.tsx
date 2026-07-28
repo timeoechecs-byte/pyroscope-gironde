@@ -130,9 +130,9 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       onClick={() => navigate("/")}
                     />
                   </div>
-                <CardTitle className="text-xl">Get Started</CardTitle>
+                <CardTitle className="text-xl">Compte optionnel</CardTitle>
                 <CardDescription>
-                  Enter your email to log in or sign up
+                  La carte est accessible <strong>sans compte</strong>. Créez un compte uniquement pour sauvegarder vos cellules surveillées et recevoir des alertes par e-mail.
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleEmailSubmit}>
@@ -183,11 +183,21 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       type="button"
                       variant="outline"
                       className="w-full mt-4"
+                      onClick={() => navigate("/")}
+                      disabled={isLoading}
+                    >
+                      Continuer sans compte
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full mt-2 text-xs text-muted-foreground"
                       onClick={handleGuestLogin}
                       disabled={isLoading}
                     >
-                      <UserX className="mr-2 h-4 w-4" />
-                      Continue as Guest
+                      <UserX className="mr-2 h-3 w-3" />
+                      Compte invité anonyme
                     </Button>
                   </div>
                 </CardContent>
@@ -196,9 +206,9 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           ) : (
             <>
               <CardHeader className="text-center mt-4">
-                <CardTitle>Check your email</CardTitle>
+                <CardTitle>Vérifiez votre e-mail</CardTitle>
                 <CardDescription>
-                  We've sent a code to {step.email}
+                  Code envoyé à {step.email}
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleOtpSubmit}>
@@ -235,13 +245,13 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground text-center mt-4">
-                    Didn't receive a code?{" "}
+                    Code non reçu ?{" "}
                     <Button
                       variant="link"
                       className="p-0 h-auto"
                       onClick={() => setStep("signIn")}
                     >
-                      Try again
+                      Réessayer
                     </Button>
                   </p>
                 </CardContent>
@@ -254,11 +264,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     {isLoading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Verifying...
+                        Vérification...
                       </>
                     ) : (
                       <>
-                        Verify code
+                        Vérifier le code
                         <ArrowRight className="ml-2 h-4 w-4" />
                       </>
                     )}
@@ -270,7 +280,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     disabled={isLoading}
                     className="w-full"
                   >
-                    Use different email
+                    Autre e-mail
                   </Button>
                 </CardFooter>
               </form>

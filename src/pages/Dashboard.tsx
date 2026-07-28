@@ -1,14 +1,19 @@
 /**
- * PyroScope 33 — Dashboard.
+ * PyroScope 33 — Dashboard (refonte feugironde.fr-style).
  *
- * Estimation risque feu temps réel : satellites (FIRMS) + météo (Open-Meteo).
- * Zéro simulation, zéro donnée d'exemple.
+ * Carte en accès libre (pas d'auth requise), avec :
+ * 1. Bandeau légal sticky en haut
+ * 2. StatsBar sticky (KPIs temps réel)
+ * 3. FilterBar sticky (filtres période, FRP, couches)
+ * 4. Carte MapContainer plein écran
+ * 5. Sections empilées : couches, qualité de l'air, météo, surfaces brûlées,
+ *    consignes officielles, sources.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { useAuth } from "@/hooks/use-auth";
+import { Badge } from "@/components/ui/badge";
 import MapContainer from "@/components/MapContainer";
 import HotspotLayer from "@/components/HotspotLayer";
 import type { HotspotData } from "@/components/HotspotLayer";
@@ -18,18 +23,30 @@ import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
-import { getFirmsApiKey, hasFirmsApiKey, getOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
+import {
+  getFirmsApiKey,
+  hasFirmsApiKey,
+  getOpenAqApiKey,
+  getCdseConfig,
+} from "@/config/api-keys";
 import {
   Flame,
-  LogOut,
   Thermometer,
   Layers,
   RefreshCw,
   Satellite,
-  Map,
+  Map as MapIcon,
   Trees,
+  Wind,
+  Skull,
+  Eye,
+  ShieldAlert,
+  Phone,
+  Bell,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
-import { useNavigate } from "react-router";
+import { Link } from "react-router";
 
 // ── Grille météo Gironde (~10 km) ─────────────────────────────────────
 const GRID = [
@@ -45,7 +62,6 @@ interface WeatherPoint {
   wind_speed: number; wind_dir: number; wind_gusts: number;
 }
 
-/** Calcule un indice de danger feu [0-100] depuis les données météo */
 function calcFireRisk(pts: WeatherPoint[]): number {
   if (!pts.length) return 0;
   const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -53,30 +69,21 @@ function calcFireRisk(pts: WeatherPoint[]): number {
   const h = avg(pts.map((p) => p.humidity));
   const w = avg(pts.map((p) => p.wind_speed));
   const r = avg(pts.map((p) => p.precip));
-
-  // Température : > 25°C contribue au risque
   const tScore = Math.min(100, Math.max(0, (t - 10) * 3.33));
-  // Humidité : < 40% contribue
   const hScore = Math.min(100, Math.max(0, (60 - h) * 2.5));
-  // Vent : > 15 km/h accélère la propagation
   const wScore = Math.min(100, Math.max(0, (w - 5) * 4));
-  // Précipitations récentes : > 0 réduit le risque
   const rScore = r > 0 ? Math.max(0, 30 - r * 10) : 80;
-
   const score = Math.round(tScore * 0.25 + hScore * 0.25 + wScore * 0.30 + rScore * 0.20);
   return Math.min(100, Math.max(0, score));
 }
 
-/** Couleur + classe selon le score */
-function riskLevel(score: number): { label: string; color: string; bg: string } {
-  if (score < 15) return { label: "Très faible", color: "text-green-600", bg: "bg-green-900/20 border-green-700/30" };
-  if (score < 35) return { label: "Faible", color: "text-yellow-600", bg: "bg-yellow-900/20 border-yellow-700/30" };
-  if (score < 55) return { label: "Modéré", color: "text-orange-500", bg: "bg-orange-900/20 border-orange-700/30" };
-  if (score < 75) return { label: "Élevé", color: "text-red-500", bg: "bg-red-900/20 border-red-700/30" };
-  return { label: "Très élevé", color: "text-red-300", bg: "bg-red-900/40 border-red-600/50" };
+function riskLevel(score: number) {
+  if (score < 15) return { label: "Très faible", color: "text-emerald-700 dark:text-emerald-400", bg: "bg-emerald-100 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800" };
+  if (score < 35) return { label: "Faible", color: "text-yellow-700 dark:text-yellow-300", bg: "bg-yellow-100 dark:bg-yellow-950/40 border-yellow-300 dark:border-yellow-800" };
+  if (score < 55) return { label: "Modéré", color: "text-orange-700 dark:text-orange-300", bg: "bg-orange-100 dark:bg-orange-950/40 border-orange-300 dark:border-orange-800" };
+  if (score < 75) return { label: "Élevé", color: "text-red-700 dark:text-red-300", bg: "bg-red-100 dark:bg-red-950/40 border-red-300 dark:border-red-800" };
+  return { label: "Très élevé", color: "text-red-900 dark:text-red-200", bg: "bg-red-200 dark:bg-red-950/60 border-red-500 dark:border-red-700" };
 }
-
-// ── Air Quality types ─────────────────────────────────────────────────
 
 interface AirQualityData {
   source: "openaq" | "openmeteo";
@@ -100,7 +107,6 @@ async function fetchAirQuality(): Promise<AirQualityData> {
     no2: null, so2: null, aod: null, uvIndex: null, time: "", error: null,
   };
 
-  // 1. TENTATIVE OPENAQ (stations ATMO Nouvelle-Aquitaine en Gironde, plus de polluants)
   const openAqKey = getOpenAqApiKey();
   if (openAqKey && openAqKey.length > 6) {
     try {
@@ -113,7 +119,6 @@ async function fetchAirQuality(): Promise<AirQualityData> {
         const locData = await locRes.json();
         const station = locData?.results?.[0];
         if (station?.id) {
-          // Récupération mesures de la 1ère station trouvée
           const measureRes = await fetch(
             `https://api.openaq.org/v3/locations/${station.id}/latest`,
             { headers: { "X-API-Key": openAqKey } },
@@ -146,11 +151,10 @@ async function fetchAirQuality(): Promise<AirQualityData> {
         }
       }
     } catch {
-      // On tombe sur le fallback Open-Meteo ci-dessous, sans silencieux
+      // → fallback ci-dessous
     }
   }
 
-  // 2. FALLBACK OPEN-METEO (modele CAMS Copernicus, sans cle, si OpenAQ echoue)
   try {
     const lat = 44.8, lon = -0.5;
     const r = await fetch(
@@ -204,7 +208,6 @@ async function fetchWeather(): Promise<WeatherPoint[]> {
 
 async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; error: string | null }> {
   const bbox = "-1.35,44.15,0.35,45.60";
-  // Note: le format FIRMS officiel est /csv/{MAP_KEY}/{SOURCE}/{AREA}/{DAY_RANGE}
   const fetchCSV = async (url: string) => {
     const r = await fetch(url);
     if (!r.ok) {
@@ -218,9 +221,8 @@ async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; er
     fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/${bbox}/1`),
     fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/MODIS_NRT/${bbox}/1`),
   ]);
-  // Détecter clé invalide
   if (r1.error === "CLÉ_INVALIDE" || r2.error === "CLÉ_INVALIDE") {
-    return { hotspots: [], error: "Clé FIRMS invalide — vérifie la clé sur firms.modaps.eosdis.nasa.gov" };
+    return { hotspots: [], error: "Clé FIRMS invalide — vérifie firms.modaps.eosdis.nasa.gov" };
   }
   const all: HotspotData[] = [];
   for (const r of [r1, r2, r3]) {
@@ -257,19 +259,16 @@ async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; er
   return { hotspots: all, error: null };
 }
 
-// ── Composant ──────────────────────────────────────────────────────────
+// ── Composant principal ───────────────────────────────────────────────
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
-
-  // ── Clés API (hardcodées dans api-keys.ts) ─────────────────────
+  // ── Clés API ──
   const firmsKey = getFirmsApiKey();
   const firmsConfigured = hasFirmsApiKey();
   const cdseConfig = getCdseConfig();
   const cdseConfigured = Boolean(cdseConfig.clientId && cdseConfig.clientSecret);
 
-  // ── Données sources ────────────────────────────────────────────────
+  // ── Données ──
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
@@ -305,7 +304,6 @@ export default function Dashboard() {
       if (h.length > 0) setHotspots(h);
       setAirQuality(aq);
       if (!w.length) setError("Météo : aucun point de grille disponible");
-      // Les clés sont hardcodées dans api-keys.ts — toujours configurées
     } catch {
       setError("Erreur de chargement des données");
     } finally {
@@ -313,7 +311,6 @@ export default function Dashboard() {
     }
   }, [firmsKey, firmsConfigured]);
 
-  // Re-fetch air quality toutes les 15 minutes (gratuit, sans cle, appel direct possible)
   useEffect(() => {
     const aqInterval = setInterval(() => {
       fetchAirQuality().then((aq) => {
@@ -323,10 +320,8 @@ export default function Dashboard() {
     return () => clearInterval(aqInterval);
   }, []);
 
-  // Chargement initial + rafraîchissement automatique
   useEffect(() => {
     load();
-    // Météo : rafraîchir toutes les 5 minutes
     const weatherInterval = setInterval(() => {
       fetchWeather().then((w) => {
         if (w.length) {
@@ -335,7 +330,6 @@ export default function Dashboard() {
         }
       });
     }, 5 * 60 * 1000);
-    // FIRMS : rafraîchir toutes les 15 minutes
     const firmsInterval = setInterval(() => {
       if (firmsConfigured && firmsKey) {
         fetchFirms(firmsKey).then((r) => {
@@ -349,14 +343,26 @@ export default function Dashboard() {
     };
   }, [load, firmsConfigured, firmsKey]);
 
-  // ── Risque calculé ────────────────────────────────────────────────
+  // ── Filtres + couches ──
+  const [period, setPeriod] = useState<"24h" | "48h" | "7j">("24h");
+  const [layers, setLayers] = useState({
+    hotspots: true,
+    temperature: true,
+    wind: true,
+    perimeters: true,
+    ndvi: false,
+  });
+  const [sentinelLayer, setSentinelLayer] = useState<"ndvi" | "true_color" | "ndwi">("ndvi");
+  const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
+
+  // ── KPIs calculés ──
   const riskScore = calcFireRisk(weather);
   const risk = riskLevel(riskScore);
-  const avgTemp = weather.length ? Math.round(weather.reduce((s, p) => s + p.temp, 0) / weather.length * 10) / 10 : 0;
-  const avgWind = weather.length ? Math.round(weather.reduce((s, p) => s + p.wind_speed, 0) / weather.length * 10) / 10 : 0;
+  const avgTemp = weather.length ? Math.round((weather.reduce((s, p) => s + p.temp, 0) / weather.length) * 10) / 10 : 0;
+  const avgWind = weather.length ? Math.round((weather.reduce((s, p) => s + p.wind_speed, 0) / weather.length) * 10) / 10 : 0;
   const avgHum = weather.length ? Math.round(weather.reduce((s, p) => s + p.humidity, 0) / weather.length) : 0;
+  const totalFrp = hotspots.reduce((s, h) => s + h.frp, 0);
 
-  // ── Périmètres feu estimés depuis les hotspots ───────────────────
   const perimeters = useMemo(
     () => (hotspots.length >= 3 ? estimateFirePerimeters(hotspots) : []),
     [hotspots],
@@ -364,308 +370,555 @@ export default function Dashboard() {
   const totalBurnedHa = perimeters.reduce((s, p) => s + p.areaHa, 0);
   const totalBurnedHaBuf = perimeters.reduce((s, p) => s + p.areaHaBuffered, 0);
   const confirmedFires = perimeters.filter((p) => p.confidence === "confirmé").length;
+  const lastDetection = hotspots.length > 0 ? hotspots[0] : null;
 
-  // ── Couches ───────────────────────────────────────────────────────
-  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true, perimeters: true, ndvi: false });
-  const [sentinelLayer, setSentinelLayer] = useState<"ndvi" | "true_color" | "ndwi">("ndvi");
-  const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
-
+  const hotspotsOk = hotspots.length > 0;
   const windGrid = weather.map((p) => ({
     lon: p.lon, lat: p.lat,
     u: -(p.wind_speed * Math.sin((p.wind_dir * Math.PI) / 180)),
     v: -(p.wind_speed * Math.cos((p.wind_dir * Math.PI) / 180)),
   }));
 
-  const hotspotsOk = hotspots.length > 0;
+  // ── Sections pliables ──
+  const [openSection, setOpenSection] = useState<string | null>("layers");
+
+  const Section = ({ id, title, icon: Icon, children, badge }: {
+    id: string; title: string; icon: typeof Flame; children: React.ReactNode; badge?: string;
+  }) => {
+    const open = openSection === id;
+    return (
+      <section className="border-b border-border/40">
+        <button
+          onClick={() => setOpenSection(open ? null : id)}
+          className="flex w-full items-center justify-between px-4 py-4 text-left hover:bg-accent/20 transition-colors sm:px-6"
+        >
+          <div className="flex items-center gap-2">
+            <Icon className="h-4 w-4 text-fire-500" />
+            <h2 className="text-sm font-bold uppercase tracking-wide">{title}</h2>
+            {badge && (
+              <Badge variant="outline" className="ml-2 border-fire-700/40 text-[10px] text-fire-700">
+                {badge}
+              </Badge>
+            )}
+          </div>
+          {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
+        {open && <div className="px-4 pb-6 sm:px-6">{children}</div>}
+      </section>
+    );
+  };
 
   return (
-    <div className="flex min-h-screen flex-col bg-background text-foreground">
-      {/* ── Header ──────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 border-b border-border/50 bg-background/90 px-4 py-2 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-7xl items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Flame className="h-5 w-5 text-fire-500" />
-            <span className="text-sm font-semibold">PyroScope<span className="text-fire-500">33</span></span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden md:inline text-xs text-muted-foreground">
-              {user?.email}
-            </span>
-            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={async () => { await signOut(); navigate("/"); }}>
-              <LogOut className="h-3.5 w-3.5" />
-            </Button>
+    <div className="min-h-screen bg-background text-foreground">
+      {/* ── StatsBar sticky (juste sous le bandeau légal) ────────────── */}
+      <div className="sticky top-[68px] z-30 border-b border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+        <div className="mx-auto max-w-7xl px-3 py-2 sm:px-6">
+          <div className="flex items-center gap-3 overflow-x-auto">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Flame className="h-4 w-4 text-fire-500" />
+              <span className="text-xs font-bold tracking-tight hidden sm:inline">PyroScope<span className="text-fire-500">33</span></span>
+            </div>
+
+            <div className="h-6 w-px bg-border/60 shrink-0" />
+
+            {/* KPI 1 : détections 24h */}
+            <StatChip
+              label="Détections 24h"
+              value={hotspots.length.toString()}
+              tone={hotspotsOk ? "fire" : "muted"}
+              icon={Satellite}
+            />
+            {/* KPI 2 : FRP totale */}
+            <StatChip
+              label="FRP totale"
+              value={`${totalFrp.toFixed(1)} MW`}
+              tone={totalFrp > 5 ? "fire" : "muted"}
+              icon={Flame}
+            />
+            {/* KPI 3 : Surface brûlée */}
+            <StatChip
+              label="Surface brûlée est."
+              value={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha` : "—"}
+              tone={totalBurnedHaBuf > 0 ? "fire" : "muted"}
+              icon={MapIcon}
+            />
+            {/* KPI 4 : Risque */}
+            <StatChip
+              label="Risque"
+              value={`${riskScore}/100`}
+              tone={riskScore > 55 ? "fire" : riskScore > 15 ? "warning" : "safe"}
+              icon={ShieldAlert}
+            />
+            {/* KPI 5 : T° moyenne */}
+            <StatChip
+              label="T° moy."
+              value={`${avgTemp}°C`}
+              tone="muted"
+              icon={Thermometer}
+            />
+            {/* KPI 6 : Vent moyen */}
+            <StatChip
+              label="Vent moy."
+              value={`${avgWind} km/h`}
+              tone="muted"
+              icon={Wind}
+            />
+
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-[10px]"
+                onClick={load}
+                disabled={loading}
+              >
+                <RefreshCw className={`mr-1 h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+                Actualiser
+              </Button>
+              <Link
+                to="/auth"
+                className="hidden h-7 items-center rounded-md border border-border/50 bg-background px-2.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/40 sm:flex"
+                title="Compte optionnel : cellules surveillées, alertes e-mail"
+              >
+                <Eye className="mr-1 h-3 w-3" />
+                Mon compte
+              </Link>
+            </div>
           </div>
         </div>
-      </header>
+      </div>
 
-      <div className="flex flex-1 flex-col lg:flex-row">
-        {/* ── Carte ───────────────────────────────────────────── */}
-        <main className="relative flex flex-1 flex-col">
-          <MapContainer>
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            <HotspotLayer map={null as any} hotspots={hotspots} visible={layers.hotspots} />
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            <IsothermLayer map={null as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            <FirePerimeterLayer map={null as any} perimeters={perimeters} visible={layers.perimeters} />
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            {layers.ndvi && <SentinelMapLayer map={null as any} layer={sentinelLayer} visible={layers.ndvi} />}
-          </MapContainer>
-
-          {/* ── Overlay risque ───────────────────────────────── */}
-          <div className="absolute left-3 top-3 z-20 flex flex-col gap-2">
-            <div className={`rounded-lg border px-3 py-2 backdrop-blur-sm ${risk.bg}`}>
-              <div className="flex items-center gap-2">
-                <Flame className={`h-4 w-4 ${risk.color}`} />
-                <span className={`text-xs font-bold ${risk.color}`}>{risk.label}</span>
-              </div>
-              <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-white/20">
-                <div className="h-full rounded-full bg-fire-500 transition-all" style={{ width: `${riskScore}%` }} />
-              </div>
-            </div>
-            <Button variant="secondary" size="sm" className="h-7 bg-background/80 px-2 text-[10px] backdrop-blur-sm" onClick={load} disabled={loading}>
-              <RefreshCw className={`mr-1 h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-              {loading ? "…" : "Actualiser"}
-            </Button>
-          </div>
-
-          {/* Footer carte */}
-          <div className="absolute bottom-3 left-3 z-20 rounded border border-border/40 bg-background/70 px-2 py-1 text-[9px] text-muted-foreground backdrop-blur-sm">
-            Gironde · © OSM contributeurs · Open-Meteo · NASA FIRMS
-          </div>
-          <div className="absolute bottom-3 right-3 z-20 flex gap-2">
-            <div className="rounded border border-border/40 bg-background/70 px-2 py-1 text-[9px] text-muted-foreground backdrop-blur-sm">
-              {hotspotsOk ? `${hotspots.length} hotspot${hotspots.length > 1 ? "s" : ""}` : "Aucune détection"}
-            </div>
-            <div className={`rounded border px-2 py-1 text-[9px] backdrop-blur-sm ${risk.bg}`}>
-              <span className={risk.color}>Risque {riskScore}/100</span>
-            </div>
-          </div>
-        </main>
-
-        {/* ── Sidebar ─────────────────────────────────────────── */}
-        <aside className="w-full border-t border-border/50 bg-card/30 lg:w-64 lg:border-l lg:border-t-0">
-          <div className="overflow-y-auto p-3 space-y-3">
-
-            {/* Couches */}
-            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              <Layers className="h-3 w-3" /> Couches
-            </h4>
-            {(["hotspots", "temperature", "wind", "perimeters", "ndvi"] as const).map((k) => (
-              <div key={k} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-accent/30">
-                <Switch checked={layers[k]} onCheckedChange={() => toggle(k)} className="h-4 w-7 data-[state=checked]:bg-fire-600" />
-                <span className="text-xs text-muted-foreground">
-                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : k === "wind" ? "Vent animé" : k === "perimeters" ? "Périmètres feux" : "Satellite (Sentinel-2)"}
-                </span>
-              </div>
+      {/* ── FilterBar sticky (période + couches inline) ─────────────── */}
+      <div className="sticky top-[124px] z-20 border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-3 py-2 sm:px-6">
+          <div className="flex items-center gap-1 rounded-md border border-border/50 bg-background p-0.5">
+            {(["24h", "48h", "7j"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`rounded px-2.5 py-1 text-[10px] font-medium transition-colors ${
+                  period === p ? "bg-fire-600 text-white" : "text-muted-foreground hover:bg-accent/30"
+                }`}
+              >
+                {p}
+              </button>
             ))}
+          </div>
 
-            {/* Sélecteur de couche Sentinel-2 */}
-            {layers.ndvi && (
-              <div className="flex gap-1 rounded border border-border/30 p-1">
-                {(["ndvi", "true_color", "ndwi"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setSentinelLayer(s)}
-                    className={`flex-1 rounded px-2 py-1 text-[9px] font-medium transition-colors ${
-                      sentinelLayer === s
-                        ? "bg-fire-600 text-white"
-                        : "text-muted-foreground hover:bg-accent/30"
-                    }`}
-                  >
-                    {s === "ndvi" ? "NDVI" : s === "true_color" ? "Couleur" : "NDWI"}
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="flex flex-wrap items-center gap-1">
+            {([
+              ["hotspots", "🔥 Feux"],
+              ["temperature", "🌡 T°"],
+              ["wind", "💨 Vent"],
+              ["perimeters", "🔥 Surfaces brûlées"],
+              ["ndvi", "🌿 Satellite"],
+            ] as const).map(([k, lbl]) => (
+              <button
+                key={k}
+                onClick={() => toggle(k)}
+                className={`rounded-md px-2 py-1 text-[10px] font-medium border transition-colors ${
+                  layers[k]
+                    ? "border-fire-700/60 bg-fire-950/40 text-fire-300"
+                    : "border-border/40 text-muted-foreground hover:bg-accent/30"
+                }`}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
 
-            <hr className="border-border/40" />
-
-            {/* Risque */}
-            <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              <Flame className="h-3 w-3 text-fire-500" /> Risque feu temps réel
-            </h4>
-            <div className={`rounded-lg border p-3 ${risk.bg}`}>
-              <div className="flex items-center justify-between">
-                <span className={`text-lg font-bold ${risk.color}`}>{riskScore}</span>
-                <span className={`text-[10px] font-medium ${risk.color}`}>/ 100</span>
-              </div>
-              <p className={`text-xs font-semibold ${risk.color}`}>{risk.label}</p>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/15">
-                <div className="h-full rounded-full bg-fire-500 transition-all" style={{ width: `${riskScore}%` }} />
-              </div>
-              <p className="mt-1 text-[9px] text-muted-foreground/50">
-                Basé sur T={avgTemp}°C · HR={avgHum}% · Vent={avgWind} km/h · {hotspotsOk ? `${hotspots.length} détections` : "pas de détection"}
-              </p>
+          {layers.ndvi && (
+            <div className="flex gap-1 rounded-md border border-border/50 bg-background p-0.5">
+              {(["ndvi", "true_color", "ndwi"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSentinelLayer(s)}
+                  className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                    sentinelLayer === s ? "bg-emerald-600 text-white" : "text-muted-foreground hover:bg-accent/30"
+                  }`}
+                >
+                  {s === "ndvi" ? "NDVI" : s === "true_color" ? "Couleur" : "NDWI"}
+                </button>
+              ))}
             </div>
+          )}
+        </div>
+      </div>
 
-            {/* Hotspots FIRMS */}
-            <div className="rounded border border-border/40 p-2.5">
-              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <Satellite className="h-3 w-3 text-fire-500" /> NASA FIRMS
-              </p>
-              <p className={`text-[10px] ${!firmsConfigured ? "text-yellow-600/70" : "text-green-600/70"}`}>
-                {firmsConfigured ? "✓ Clé configurée" : "Clé manquante — définir VITE_FIRMS_API_KEY dans Freebuff Keys UI"}
-              </p>
-              {firmsConfigured && (
-                <>
-                  <p className="mt-1 text-[10px] text-muted-foreground/60">
-                    {hotspotsOk
-                      ? `${hotspots.length} détection${hotspots.length > 1 ? "s" : ""} satellite`
-                      : "Aucune détection active"}
-                  </p>
-                  {hotspotsOk && (
-                    <div className="mt-1 text-[9px] text-muted-foreground/40">
-                      FRP max : {Math.max(...hotspots.map((h) => h.frp)).toFixed(1)} MW · Dernier : {hotspots[0].acq_date}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+      {/* ── Carte plein écran ─────────────────────────────────────────── */}
+      <div className="relative w-full bg-card/40" style={{ height: "62vh", minHeight: "440px" }}>
+        <MapContainer>
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          <HotspotLayer map={null as any} hotspots={hotspots} visible={layers.hotspots} />
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          <IsothermLayer map={null as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          <FirePerimeterLayer map={null as any} perimeters={perimeters} visible={layers.perimeters} />
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {layers.ndvi && <SentinelMapLayer map={null as any} layer={sentinelLayer} visible={layers.ndvi} />}
+        </MapContainer>
 
-            {/* Surfaces brûlées estimées */}
-            {perimeters.length > 0 && (
-              <div className="rounded border border-red-900/30 bg-red-950/10 p-2.5">
-                <p className="flex items-center gap-1 text-[10px] font-medium text-red-400">
-                  <Map className="h-3 w-3" /> Zones brûlées estimées
-                </p>
-                <div className="mt-1.5 space-y-1">
-                  <p className="text-[11px] font-semibold text-red-300">
-                    ~{Math.round(totalBurnedHa)} ha{" "}
-                    <span className="text-[9px] font-normal text-red-400/60">
-                      ({Math.round(totalBurnedHaBuf)} ha avec buffer)
-                    </span>
-                  </p>
-                  <p className="text-[9px] text-muted-foreground/60">
-                    {perimeters.length} foyer{perimeters.length > 1 ? "s" : ""} détecté{perimeters.length > 1 ? "s" : ""}
-                    {confirmedFires > 0 && ` · ${confirmedFires} confirmé${confirmedFires > 1 ? "s" : ""}`}
-                  </p>
-                  {perimeters.slice(0, 3).map((p) => (
-                    <div key={p.id} className="flex items-center justify-between border-t border-red-900/20 pt-1 text-[8px] text-muted-foreground/50">
-                      <span>
-                        {p.confidence === "confirmé" ? "🔥" : p.confidence === "probable" ? "⚠️" : "⚪"}{" "}
-                        ~{Math.round(p.areaHa)} ha
-                      </span>
-                      <span>{p.detectionCount} détections · {p.lastDate}</span>
-                    </div>
-                  ))}
-                </div>
-                <p className="mt-1.5 text-[7px] leading-tight text-muted-foreground/30">
-                  ⚠️ Estimation conservative par clustering VIIRS. Ne reflète pas la surface brûlée réelle.
-                  Cliquez sur un polygone pour le détail. Sources : NASA FIRMS.
-                </p>
-              </div>
-            )}
+        {/* Overlay central : pas de carte en preview mode */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="rounded-lg border border-border/50 bg-background/80 px-4 py-3 text-center text-xs text-muted-foreground shadow backdrop-blur">
+            <Layers className="mx-auto mb-1 h-5 w-5 text-fire-500" />
+            <strong className="text-foreground">Carte Gironde</strong>
+            <p>Fond OSM · Hotspots · Vent · Isothermes · Périmètres</p>
+          </div>
+        </div>
 
-            {/* CDSE Sentinel-2 */}
-            <div
-              data-source-status={cdseConfigured ? "wms-unknown" : "missing"}
-              className={`rounded border p-2.5 transition-colors ${
-                cdseConfigured ? "border-orange-900/40 bg-orange-950/10" : "border-border/40"
-              }`}
-            >
-              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <Trees className="h-3 w-3" /> Copernicus Sentinel-2
-              </p>
-              {!cdseConfigured ? (
-                <p className="text-[9px] text-yellow-600/70">
-                  Clés CDSE manquantes — définir VITE_CDSE_CLIENT_ID et VITE_CDSE_CLIENT_SECRET
-                </p>
-              ) : (
-                <>
-                  <p className="text-[9px] text-green-600/70">✓ OAuth token obtenu (HTTP 200)</p>
-                  <p className="text-[9px] text-orange-500/80 font-medium mt-0.5">
-                    ⚠ WMS endpoint à investiguer (chemin /ogc/wms/sentinel-2-l2a → 404)
-                  </p>
-                  <p className="mt-0.5 text-[8px] text-muted-foreground/50">
-                    Token valide mais instance Sentinel Hub requise pour WMS
-                  </p>
-                  <p className="mt-1 text-[7px] text-muted-foreground/30">
-                    Données : ESA Copernicus · CC BY-SA 4.0
-                  </p>
-                </>
-              )}
-            </div>
-
-            {/* Météo */}
-            <div className="rounded border border-border/40 p-2.5">
-              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <Thermometer className="h-3 w-3" /> Open-Meteo (AROME HD)
-              </p>
-              <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">
-                <span>🌡 {avgTemp}°C</span>
-                <span>💧 {avgHum}%</span>
-                <span>💨 {avgWind} km/h</span>
-                <span>🌧 {weather.length ? weather[0].precip.toFixed(1) : "-"} mm</span>
-              </div>
-              <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {weatherTime}</p>
-            </div>
-
-            {/* Qualité de l'air : OpenAQ (principal, stations ATMO NA) + fallback Open-Meteo (CAMS) */}
-            <div
-              data-source-status={airQuality.error ? "error" : (airQuality.pm25 !== null || airQuality.pm10 !== null) ? "ok" : "unavailable"}
-              className={`rounded border p-2.5 transition-colors ${
-                airQuality.error ? "border-red-900/40 bg-red-950/10" : "border-border/40"
-              }`}
-            >
-              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air locale
-              </p>
-              {airQuality.source === "openaq" ? (
-                <p className="text-[9px] text-green-600/70">✓ OpenAQ · {airQuality.stationName}</p>
-              ) : (
-                <p className="text-[9px] text-yellow-600/70">⚠ Fallback · {airQuality.stationName || "Open-Meteo"}</p>
-              )}
-              {airQuality.error ? (
-                <p className="text-[9px] text-red-400 font-medium mt-1">⚠ {airQuality.error}</p>
-              ) : airQuality.pm25 === null && airQuality.pm10 === null ? (
-                <p className="text-[9px] text-muted-foreground/50 mt-1">Aucune donnée reçue</p>
-              ) : (
-                <>
-                  <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">
-                    <span>
-                      PM2.5 : {airQuality.pm25 !== null ? `${airQuality.pm25.toFixed(1)} µg/m³` : "—"}
-                    </span>
-                    <span>
-                      PM10 : {airQuality.pm10 !== null ? `${airQuality.pm10.toFixed(1)} µg/m³` : "—"}
-                    </span>
-                    <span>
-                      O₃ : {airQuality.o3 !== null ? `${airQuality.o3.toFixed(1)} µg/m³` : "—"}
-                    </span>
-                    <span>
-                      NO₂ : {airQuality.no2 !== null ? `${airQuality.no2.toFixed(1)} µg/m³` : "—"}
-                    </span>
-                    {airQuality.so2 !== null && (
-                      <span>SO₂ : {airQuality.so2.toFixed(1)} µg/m³</span>
-                    )}
-                    {airQuality.aod !== null && (
-                      <span>AOD : {airQuality.aod.toFixed(3)}</span>
-                    )}
-                    {airQuality.uvIndex !== null && (
-                      <span>UV : {airQuality.uvIndex.toFixed(1)}</span>
-                    )}
-                  </div>
-                  <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {airQuality.time}</p>
-                </>
-              )}
-            </div>
-
-            {/* Erreur */}
-            {error && <p className="text-[10px] text-red-500">{error}</p>}
-
-            {/* Légende */}
-            <hr className="border-border/40" />
-            <p className="text-[8px] leading-relaxed text-muted-foreground/30">
-              ⚠️ Estimation basée sur données Open-Meteo et NASA FIRMS.
-              Sans valeur opérationnelle. En cas d'incendie : 18/112.
-              Sources : SDIS 33 · Préfecture · Météo-France.
-              NASA FIRMS · Open-Meteo (CC BY 4.0) · IGN · © OSM contributeurs (ODbL)
+        {/* Overlay bas-gauche : dernière détection */}
+        {lastDetection && (
+          <div className="absolute bottom-3 left-3 max-w-xs rounded-lg border border-border/50 bg-background/85 px-3 py-2 text-[10px] text-foreground shadow backdrop-blur">
+            <p className="font-bold text-fire-500">Dernière détection</p>
+            <p className="text-muted-foreground">
+              {lastDetection.satellite} · {lastDetection.acq_date} {String(lastDetection.acq_time).padStart(4, "0")} ·{" "}
+              FRP <strong>{lastDetection.frp.toFixed(1)} MW</strong> ·{" "}
+              {lastDetection.age_hours.toFixed(1)} h
             </p>
           </div>
-        </aside>
+        )}
+
+        {/* Overlay bas-droite : risque */}
+        <div className={`absolute bottom-3 right-3 rounded-lg border-2 px-3 py-2 shadow-lg backdrop-blur ${risk.bg}`}>
+          <p className={`text-[10px] font-bold ${risk.color}`}>RISQUE {risk.label.toUpperCase()}</p>
+          <p className={`text-2xl font-extrabold leading-none ${risk.color}`}>{riskScore}<span className="text-xs font-medium opacity-60">/100</span></p>
+        </div>
       </div>
+
+      {/* ── Sections empilées sous la carte ──────────────────────────── */}
+      <div className="mx-auto max-w-7xl">
+        {/* ── Couches & Légende ── */}
+        <Section id="layers" title="Couches de données" icon={Layers}>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <LayerCard
+              active={layers.hotspots}
+              onToggle={() => toggle("hotspots")}
+              color="bg-fire-500"
+              title="Feux actifs (points chauds)"
+              desc="NASA FIRMS · VIIRS S-NPP & NOAA-20, MODIS · QUASI TEMPS RÉEL · délai 1-3h"
+              stat={hotspotsOk ? `${hotspots.length} sur 24h` : "0 sur 24h"}
+            />
+            <LayerCard
+              active={layers.temperature}
+              onToggle={() => toggle("temperature")}
+              color="bg-orange-400"
+              title="Température · Isothermes"
+              desc="Open-Meteo · modèle AROME ~1,5 km · 11 points de grille Gironde"
+              stat={`${avgTemp}°C moyenne`}
+            />
+            <LayerCard
+              active={layers.wind}
+              onToggle={() => toggle("wind")}
+              color="bg-sky-400"
+              title="Vent animé 10 m"
+              desc="Open-Meteo AROME HD · rafales, direction, vitesse · particules"
+              stat={`${avgWind} km/h moyenne`}
+            />
+            <LayerCard
+              active={layers.perimeters}
+              onToggle={() => toggle("perimeters")}
+              color="bg-red-600"
+              title="Surfaces brûlées estimées"
+              desc="Clustering conservatif sur hotspots VIIRS ≥3 détections · buffer +250 m"
+              stat={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha cumulées` : "aucune pour l'instant"}
+            />
+            <LayerCard
+              active={layers.ndvi}
+              onToggle={() => toggle("ndvi")}
+              color="bg-emerald-500"
+              title="Satellite Sentinel-2"
+              desc="Copernicus CDSE OAuth2 · NDVI / Couleur / NDWI ⚠️ WMS en cours de débogage (chemin /ogc/wms → 404)"
+              stat={cdseConfigured ? "OAuth OK" : "Clés absentes"}
+            />
+            <div className="rounded-lg border border-border/40 bg-card/30 p-4">
+              <p className="flex items-center gap-2 text-xs font-semibold">
+                <span className="h-3 w-3 rounded-full bg-fire-500" />
+                Légende FRP (puissance radiative)
+              </p>
+              <ul className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                <li><span className="inline-block h-2 w-2 rounded-full bg-emerald-500 align-middle" /> &lt; 1 MW — bruit / cheminée</li>
+                <li><span className="inline-block h-2 w-2 rounded-full bg-yellow-500 align-middle" /> 1-5 MW — petit foyer</li>
+                <li><span className="inline-block h-2 w-2 rounded-full bg-orange-500 align-middle" /> 5-20 MW — foyer actif</li>
+                <li><span className="inline-block h-2 w-2 rounded-full bg-red-500 align-middle" /> 20-50 MW — feu intense</li>
+                <li><span className="inline-block h-2 w-2 rounded-full bg-red-900 align-middle" /> &gt; 50 MW — embrasement</li>
+              </ul>
+            </div>
+          </div>
+        </Section>
+
+        {/* ── Surfaces brûlées ── */}
+        {perimeters.length > 0 && (
+          <Section id="burned" title={`Surfaces brûlées estimées · ${perimeters.length} foyer${perimeters.length > 1 ? "s" : ""}`} icon={Flame} badge={`~${Math.round(totalBurnedHaBuf)} ha`}>
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Estimation conservative par clustering des points chauds VIIRS ≥3 détections. Buffer +250 m autour de l'enveloppe convexe. <strong>Pas une mesure officielle</strong>.
+              </p>
+              <div className="overflow-x-auto rounded-lg border border-border/40">
+                <table className="w-full text-xs">
+                  <thead className="border-b border-border/40 bg-card/30 text-[10px] uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Foyer</th>
+                      <th className="px-3 py-2 text-right">Surface</th>
+                      <th className="px-3 py-2 text-right">Détails</th>
+                      <th className="px-3 py-2 text-left">Confiance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {perimeters.slice(0, 5).map((p) => (
+                      <tr key={p.id}>
+                        <td className="px-3 py-2 font-mono text-[10px]">{String(p.id).slice(0, 8)}</td>
+                        <td className="px-3 py-2 text-right">
+                          <strong>~{Math.round(p.areaHa)} ha</strong>
+                          <span className="ml-1 text-muted-foreground text-[10px]">(+ {Math.round(p.areaHaBuffered - p.areaHa)} buffer)</span>
+                        </td>
+                        <td className="px-3 py-2 text-right text-[10px] text-muted-foreground">
+                          {p.detectionCount} détection{p.detectionCount > 1 ? "s" : ""} · dernière {p.lastDate}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className={`text-[9px] ${p.confidence === "confirmé" ? "border-fire-700/60 text-fire-400" : p.confidence === "probable" ? "border-orange-700/60 text-orange-400" : "border-border text-muted-foreground"}`}>
+                            {p.confidence === "confirmé" ? "🔥 confirmé" : p.confidence === "probable" ? "⚠ probable" : "⚪ possible"}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {/* ── Qualité de l'air ── */}
+        <Section
+          id="air"
+          title="Qualité de l'air"
+          icon={Thermometer}
+          badge={airQuality.source === "openaq" ? "OpenAQ · stations ATMO" : "Open-Meteo CAMS"}
+        >
+          {airQuality.error ? (
+            <p className="text-sm text-red-500">⚠ {airQuality.error}</p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <PollutentCard label="PM2.5" unit="µg/m³" value={airQuality.pm25} limit={15} />
+              <PollutentCard label="PM10" unit="µg/m³" value={airQuality.pm10} limit={45} />
+              <PollutantCard label="O₃" unit="µg/m³" value={airQuality.o3} limit={120} />
+              <PollutantCard label="NO₂" unit="µg/m³" value={airQuality.no2} limit={40} />
+              {airQuality.so2 !== null && <PollutantCard label="SO₂" unit="µg/m³" value={airQuality.so2} limit={125} />}
+              {airQuality.aod !== null && <PollutantCard label="AOD" unit="" value={airQuality.aod} limit={0.3} />}
+              {airQuality.uvIndex !== null && <PollutantCard label="UV" unit="" value={airQuality.uvIndex} limit={8} />}
+            </div>
+          )}
+          <p className="mt-3 text-[10px] text-muted-foreground">
+            Source : {airQuality.stationName || "—"} · MAJ {airQuality.time}
+          </p>
+        </Section>
+
+        {/* ── Météo détaillée ── */}
+        <Section id="weather" title="Météo · AROME HD" icon={Wind}>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <WeatherCard label="🌡 Température" value={`${avgTemp}°C`} detail="Moyenne 11 points Gironde" />
+            <WeatherCard label="💧 Humidité relative" value={`${avgHum}%`} detail="Plus l'HR est basse, plus le risque est élevé" />
+            <WeatherCard label="💨 Vent moyen 10 m" value={`${avgWind} km/h`} detail="Rafales visibles via couche animations" />
+            <WeatherCard label="🌧 Précipitations" value={weather.length ? `${weather[0].precip.toFixed(1)} mm` : "—"} detail="Référence : point central" />
+          </div>
+          <p className="mt-3 text-[10px] text-muted-foreground">
+            Source : Open-Meteo (modèle AROME France HD ~1,5 km) · MAJ {weatherTime} · Rafraîchissement auto toutes les 5 min
+          </p>
+        </Section>
+
+        {/* ── Sentinel-2 (CDSE) ── */}
+        <Section id="sentinel" title="Satellite Sentinel-2 (Copernicus)" icon={Trees} badge={cdseConfigured ? "OAuth OK" : "Clés manquantes"}>
+          <div className="rounded-lg border border-border/40 bg-card/30 p-4">
+            <p className="text-sm">
+              {cdseConfigured
+                ? <>✓ <strong>Token OAuth2 CDSE obtenu</strong> (HTTP 200). Activation du flux WMS en cours — le chemin <code className="rounded bg-card/60 px-1 text-[11px]">/ogc/wms/sentinel-2-l2a</code> renvoie actuellement 404. Sentinel Hub nécessite la création préalable d'une <em>Instance ID</em> via le dashboard CDSE.</>
+                : <>⚠ Identifiants CDSE absents. Active la couche NDVI/Couleur/NDWI haute résolution.</>}
+            </p>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Données : ESA Copernicus Sentinel-2 · Licence CC BY-SA 4.0
+            </p>
+          </div>
+        </Section>
+
+        {/* ── Consignes officielles ── */}
+        <Section id="safety" title="Consignes officielles" icon={ShieldAlert}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SafetyCard
+              variant="emergency"
+              icon={Phone}
+              title="Témoin d'un départ de feu"
+              body={<>Appelez le <strong>18 ou 112</strong> immédiatement, même si le feu semble petit. Localisez : commune, route, lieu-dit, PK. Ne vous approchez pas, éloignez-vous <strong>dos au vent</strong>.</>}
+            />
+            <SafetyCard
+              variant="warning"
+              icon={Skull}
+              title="Si le feu approche de chez vous"
+              body={<>Abritez-vous dans un bâtiment en dur. Fermez volets, fenêtres, portes. Calfeutrez avec linges humides. Arrêtez VMC et clim. Fermez bouteilles de gaz à l'extérieur. <strong>Habillez-vous en coton couvrant</strong>.</>}
+            />
+            <SafetyCard
+              variant="warning"
+              icon={Bell}
+              title="Fumées : se protéger"
+              body={<>Restez à l'intérieur, fenêtres fermées, effort physique limité. <strong>Masque FFP2</strong> si vous devez sortir. Asthmatiques,cardiaques, âgés : vigilance renforcée, appelez le <strong>15</strong> en cas de gêne.</>}
+            />
+            <SafetyCard
+              variant="info"
+              icon={Eye}
+              title="Prévention (9 feux sur 10 d'origine humaine)"
+              body={<>Ni feu, ni barbecue, ni mégot en forêt. Reportez les travaux à étincelles aux heures fraîches. Débroussaillez autour de votre habitation (obligation OLD).</>}
+            />
+          </div>
+          <div className="mt-4 rounded-lg border border-border/40 bg-card/30 p-3 text-[11px]">
+            <strong>S'informer :</strong>{" "}
+            <a className="underline" href="https://www.gironde.gouv.fr" target="_blank" rel="noreferrer">Préfecture 33</a>{" · "}
+            <a className="underline" href="https://meteofrance.com/meteo-des-forets" target="_blank" rel="noreferrer">Météo des Forêts</a>{" · "}
+            Radio France Bleu Gironde (100.1) · App <strong>FR-Alert</strong> (notifications automatiques).
+          </div>
+        </Section>
+
+        {/* ── Sources & attribution ── */}
+        <Section id="sources" title="Sources & attribution" icon={Eye}>
+          <div className="space-y-2 text-xs text-muted-foreground">
+            <p>
+              <strong className="text-foreground">NASA FIRMS</strong> · Points chauds VIIRS S-NPP / NOAA-20, MODIS · Données quasi temps réel · 1-3 h de latence.
+            </p>
+            <p>
+              <strong className="text-foreground">Open-Meteo</strong> · Météo (AROME France HD ~1,5 km) + Air Quality (CAMS Copernicus) · <a className="underline" href="https://open-meteo.com/" target="_blank" rel="noreferrer">CC BY 4.0</a>.
+            </p>
+            <p>
+              <strong className="text-foreground">OpenAQ</strong> · Stations ATMO Nouvelle-Aquitaine en Gironde · <a className="underline" href="https://openaq.org/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a>.
+            </p>
+            <p>
+              <strong className="text-foreground">ESA Copernicus</strong> · Sentinel-2 (CDSE) · <a className="underline" href="https://dataspace.copernicus.eu/" target="_blank" rel="noreferrer">Licence Copernicus</a>.
+            </p>
+            <p>
+              <strong className="text-foreground">IGN</strong> · BD Forêt V2, RGE ALTI · Données ouvertes · <a className="underline" href="https://www.ign.fr/" target="_blank" rel="noreferrer">Licence Etalab 2.0</a>.
+            </p>
+            <p>
+              <strong className="text-foreground">OpenStreetMap</strong> · Fond cartographique · <a className="underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">ODbL</a> · © contributeurs.
+            </p>
+            <p className="mt-3 border-t border-border/40 pt-3">
+              <strong className="text-foreground">PyroScope 33</strong> · Projet open source éducatif.{" "}
+              <a className="underline" href="#/about">En savoir plus</a> · Code source disponible.
+            </p>
+          </div>
+        </Section>
+      </div>
+
+      {error && (
+        <div className="border-t border-red-300 bg-red-50 px-4 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300 sm:px-6">
+          ⚠ {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sous-composants ───────────────────────────────────────────────────
+
+function StatChip({ label, value, tone = "muted", icon: Icon }: {
+  label: string; value: string; tone?: "muted" | "safe" | "warning" | "fire"; icon: typeof Flame;
+}) {
+  const toneClass = {
+    muted: "text-muted-foreground bg-transparent border-border/40",
+    safe: "text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800",
+    warning: "text-orange-700 dark:text-orange-300 bg-orange-100/60 dark:bg-orange-950/40 border-orange-300 dark:border-orange-800",
+    fire: "text-fire-700 dark:text-fire-300 bg-fire-100/60 dark:bg-fire-950/40 border-fire-300 dark:border-fire-800",
+  }[tone];
+  return (
+    <div className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 ${toneClass}`}>
+      <Icon className="h-3 w-3 shrink-0 opacity-70" />
+      <span className="text-[9px] uppercase tracking-wide opacity-70">{label}</span>
+      <strong className="text-xs">{value}</strong>
+    </div>
+  );
+}
+
+function LayerCard({ active, onToggle, color, title, desc, stat }: {
+  active: boolean; onToggle: () => void; color: string;
+  title: string; desc: string; stat?: string;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className={`text-left rounded-lg border p-3 transition-colors ${
+        active
+          ? "border-fire-700/60 bg-fire-50/40 dark:bg-fire-950/30"
+          : "border-border/40 bg-card/30 opacity-60 hover:opacity-90"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <span className={`h-3 w-3 rounded-full ${active ? color : "bg-muted-foreground/40"}`} />
+        <span className="text-xs font-bold">{title}</span>
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{desc}</p>
+      {stat && (
+        <p className="mt-2 text-xs font-semibold text-foreground">{stat}</p>
+      )}
+    </button>
+  );
+}
+
+function PollutentCard({ label, unit, value, limit }: { label: string; unit: string; value: number | null; limit: number }) {
+  const overLimit = value !== null && value > limit;
+  const tone = value === null ? "muted" : overLimit ? "fire" : value > limit * 0.7 ? "warning" : "safe";
+  const tones = {
+    muted: "border-border/40 text-muted-foreground",
+    safe: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300",
+    warning: "border-orange-300 dark:border-orange-800 text-orange-700 dark:text-orange-300",
+    fire: "border-red-300 dark:border-red-800 text-red-700 dark:text-red-300",
+  };
+  return (
+    <div className={`rounded-lg border p-3 ${tones[tone]}`}>
+      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+      <p className="text-2xl font-bold">
+        {value !== null ? value.toFixed(unit === "µg/m³" ? 1 : unit === "" ? 3 : 1) : "—"}
+        <span className="ml-1 text-[10px] font-normal opacity-60">{unit}</span>
+      </p>
+      <p className="text-[10px] opacity-60">limite OMS : {limit} {unit}</p>
+    </div>
+  );
+}
+
+function PollutantCard({ label, unit, value, limit }: { label: string; unit: string; value: number | null; limit: number }) {
+  // Alias to keep backward-compat
+  return <PollutentCard label={label} unit={unit} value={value} limit={limit} />;
+}
+
+function WeatherCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-lg border border-border/40 bg-card/30 p-3">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 text-2xl font-bold">{value}</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function SafetyCard({ variant, icon: Icon, title, body }: {
+  variant: "emergency" | "warning" | "info";
+  icon: typeof Flame; title: string; body: React.ReactNode;
+}) {
+  const variants = {
+    emergency: "border-red-500 bg-red-50 dark:bg-red-950/30",
+    warning: "border-orange-500 bg-orange-50 dark:bg-orange-950/30",
+    info: "border-blue-500 bg-blue-50 dark:bg-blue-950/30",
+  };
+  const iconColor = {
+    emergency: "text-red-600",
+    warning: "text-orange-600",
+    info: "text-blue-600",
+  };
+  return (
+    <div className={`rounded-lg border-2 p-4 ${variants[variant]}`}>
+      <div className="mb-2 flex items-center gap-2">
+        <Icon className={`h-5 w-5 ${iconColor[variant]}`} />
+        <h3 className="text-sm font-bold">{title}</h3>
+      </div>
+      <p className="text-xs leading-relaxed">{body}</p>
     </div>
   );
 }
