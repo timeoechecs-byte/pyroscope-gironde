@@ -51,7 +51,9 @@ export default function SentinelMapLayer({
 
     async function fetchToken() {
       const config = getCdseConfig();
-      if (!config.clientId || !config.clientSecret) {
+      // 🔒 On ne vérifie que la partie publique (clientId). Le clientSecret
+      // reste côté serveur Convex et n'est jamais passé en argument.
+      if (!config?.clientId) {
         if (mounted) setStatus("unconfigured");
         return;
       }
@@ -59,7 +61,6 @@ export default function SentinelMapLayer({
       try {
         const result = await getToken({
           clientId: config.clientId,
-          clientSecret: config.clientSecret,
         });
 
         if (!mounted) return;
@@ -108,7 +109,7 @@ export default function SentinelMapLayer({
     if (map.getLayer(layerId)) map.removeLayer(layerId);
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
-    const cdseBaseUrl = getCdseConfig().baseUrl ?? "https://sh.dataspace.copernicus.eu";
+    const cdseBaseUrl = getCdseConfig()?.baseUrl ?? "https://sh.dataspace.copernicus.eu";
     const wmsLayer = LAYER_WMS_MAP[layer] ?? "TRUE_COLOR";
     const tileUrl = buildWmsTileUrl(cdseBaseUrl, token, wmsLayer);
 

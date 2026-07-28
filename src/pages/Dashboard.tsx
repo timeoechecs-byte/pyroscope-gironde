@@ -440,8 +440,10 @@ function SafetyCard({ variant, icon: Icon, title, body }: SafetyCardProps) {
 export default function Dashboard() {
   const firmsKey = getFirmsApiKey();
   const firmsConfigured = hasFirmsApiKey();
+  // 🔒 Seul le clientId public peut transiter par le frontend. Le clientSecret
+  // reste côté serveur Convex (cf. src/convex/cdse.ts + docs/SECURITY.md).
   const cdseConfig = getCdseConfig();
-  const cdseConfigured = Boolean(cdseConfig.clientId && cdseConfig.clientSecret);
+  const cdseConfigured = Boolean(cdseConfig?.clientId);
 
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");

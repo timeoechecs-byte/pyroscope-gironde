@@ -1,20 +1,20 @@
 /**
  * cdse.ts — Convex actions pour Copernicus Data Space Ecosystem (CDSE).
  *
- * Proxy OAuth2 client_credentials → token pour appels WMS/WMTS frontend.
- * Les credentials CDSE sont lues depuis process.env (Convex dashboard)
- * ou passées en argument (fallback depuis les clés VITE_ du frontend).
+ * 🔒 POLITIQUE SÉCURITÉ (audit 2026-07-28) :
+ *   Le `client_secret` CDSE ne DOIT JAMAIS transiter par le frontend.
+ *   Il est lu ici depuis process.env, qui est alimenté par le Convex
+ *   dashboard (variables chiffrées au repos, jamais exposées au bundle).
  *
- * Appel depuis le frontend :
- *   const { token, expiresAt } = await useAction(api.cdse.getToken, {
- *     clientId: "...", clientSecret: "..."
- *   });
+ *   Le frontend passe uniquement son `clientId` (public, type identifiant)
+ *   ou rien du tout — le backend applique ses propres identifiants serveur.
  *
- * Puis utilisation du token dans une source raster MapLibre :
- *   "https://sh.dataspace.copernicus.eu/ogc/wms/sentinel-2-l2a"
- *   + "?token=" + token + "&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
- *   + "&FORMAT=image/png&TRANSPARENT=true&LAYERS=" + layer
- *   + "&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256"
+ *   Cette action ne prend plus `clientSecret` en argument. Toute tentative
+ *   passe par configuration serveur.
+ *
+ * Configuration côté Convex dashboard (Settings → Environment Variables) :
+ *   - CDSE_CLIENT_ID      (obligatoire)
+ *   - CDSE_CLIENT_SECRET  (obligatoire, secret)
  */
 
 import { v } from "convex/values";
@@ -23,8 +23,6 @@ import { action } from "./_generated/server";
 // ── Constantes ─────────────────────────────────────────────────────────
 
 // Endpoint OAuth2 Copernicus Data Space (valide pour Sentinel Hub sh-* clients).
-// Note : le sous-domaine sh.dataspace renvoie 503 sur le token endpoint — on garde
-// donc identity.dataspace qui renvoie au moins un 401 propre sur credentials invalides.
 const CDSE_TOKEN_URL =
   "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token";
 
@@ -32,26 +30,30 @@ const CDSE_TOKEN_URL =
 
 export const getToken = action({
   args: {
+    /**
+     * clientId public (optionnel). Le secret est TOUJOURS lu côté serveur.
+     * Si non fourni, on utilise la variable CDSE_CLIENT_ID du dashboard Convex.
+     */
     clientId: v.optional(v.string()),
-    clientSecret: v.optional(v.string()),
   },
   handler: async (_ctx, args) => {
-    // 1. Déterminer les credentials : Convex env vars → args
     const clientId =
-      args.clientId ?? (process.env as Record<string, string>)["VITE_CDSE_CLIENT_ID"] ?? "";
+      args.clientId ?? (process.env as Record<string, string | undefined>)["CDSE_CLIENT_ID"] ?? "";
+    // 🔒 Secret lu exclusivement depuis l'env Convex — jamais depuis args.
     const clientSecret =
-      args.clientSecret ??
-      (process.env as Record<string, string>)["VITE_CDSE_CLIENT_SECRET"] ?? "";
+      (process.env as Record<string, string | undefined>)["CDSE_CLIENT_SECRET"] ?? "";
 
     if (!clientId || !clientSecret) {
       return {
         success: false as const,
-        error: "CDSE credentials non configurées. Ajouter VITE_CDSE_CLIENT_ID et VITE_CDSE_CLIENT_SECRET dans le Keys UI Freebuff ou via Convex dashboard.",
+        error:
+          "CDSE credentials non configurées côté serveur. " +
+          "Configurer CDSE_CLIENT_ID et CDSE_CLIENT_SECRET dans le dashboard Convex " +
+          "(Settings → Environment Variables).",
       };
     }
 
     try {
-      // 2. Appel OAuth2 client_credentials
       const params = new URLSearchParams();
       params.append("grant_type", "client_credentials");
       params.append("client_id", clientId);
