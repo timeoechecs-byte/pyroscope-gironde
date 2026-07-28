@@ -17,7 +17,8 @@ import IsothermLayer from "@/components/IsothermLayer";
 import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
-import { getFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey } from "@/config/api-keys";
+import SentinelMapLayer from "@/components/SentinelMapLayer";
+import { getFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -26,6 +27,7 @@ import {
   RefreshCw,
   Satellite,
   Map,
+  Trees,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 
@@ -199,6 +201,8 @@ export default function Dashboard() {
   const firmsConfigured = Boolean(firmsKey);
   const openaqKey = getOpenAqApiKey();
   const openaqConfigured = hasOpenAqApiKey();
+  const cdseConfig = getCdseConfig();
+  const cdseConfigured = Boolean(cdseConfig.clientId && cdseConfig.clientSecret);
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
@@ -294,7 +298,8 @@ export default function Dashboard() {
   const confirmedFires = perimeters.filter((p) => p.confidence === "confirmé").length;
 
   // ── Couches ───────────────────────────────────────────────────────
-  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true, perimeters: true });
+  const [layers, setLayers] = useState({ hotspots: true, temperature: true, wind: true, perimeters: true, ndvi: false });
+  const [sentinelLayer, setSentinelLayer] = useState<"ndvi" | "true_color" | "ndwi">("ndvi");
   const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
 
   const windGrid = weather.map((p) => ({
@@ -337,6 +342,8 @@ export default function Dashboard() {
             <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
             <FirePerimeterLayer map={null as any} perimeters={perimeters} visible={layers.perimeters} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            {layers.ndvi && <SentinelMapLayer map={null as any} layer={sentinelLayer} visible={layers.ndvi} />}
           </MapContainer>
 
           {/* ── Overlay risque ───────────────────────────────── */}
@@ -378,14 +385,33 @@ export default function Dashboard() {
             <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               <Layers className="h-3 w-3" /> Couches
             </h4>
-            {(["hotspots", "temperature", "wind", "perimeters"] as const).map((k) => (
+            {(["hotspots", "temperature", "wind", "perimeters", "ndvi"] as const).map((k) => (
               <div key={k} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-accent/30">
                 <Switch checked={layers[k]} onCheckedChange={() => toggle(k)} className="h-4 w-7 data-[state=checked]:bg-fire-600" />
                 <span className="text-xs text-muted-foreground">
-                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : k === "wind" ? "Vent animé" : "Périmètres feux"}
+                  {k === "hotspots" ? "Hotspots satellite" : k === "temperature" ? "Température" : k === "wind" ? "Vent animé" : k === "perimeters" ? "Périmètres feux" : "Satellite (Sentinel-2)"}
                 </span>
               </div>
             ))}
+
+            {/* Sélecteur de couche Sentinel-2 */}
+            {layers.ndvi && (
+              <div className="flex gap-1 rounded border border-border/30 p-1">
+                {(["ndvi", "true_color", "ndwi"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSentinelLayer(s)}
+                    className={`flex-1 rounded px-2 py-1 text-[9px] font-medium transition-colors ${
+                      sentinelLayer === s
+                        ? "bg-fire-600 text-white"
+                        : "text-muted-foreground hover:bg-accent/30"
+                    }`}
+                  >
+                    {s === "ndvi" ? "NDVI" : s === "true_color" ? "Couleur" : "NDWI"}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <hr className="border-border/40" />
 
@@ -464,6 +490,28 @@ export default function Dashboard() {
                 </p>
               </div>
             )}
+
+            {/* CDSE Sentinel-2 */}
+            <div className="rounded border border-border/40 p-2.5">
+              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                <Trees className="h-3 w-3" /> Copernicus Sentinel-2
+              </p>
+              {!cdseConfigured ? (
+                <p className="text-[9px] text-yellow-600/70">
+                  Clés CDSE manquantes — définir VITE_CDSE_CLIENT_ID et VITE_CDSE_CLIENT_SECRET
+                </p>
+              ) : (
+                <>
+                  <p className="text-[9px] text-green-600/70">✓ Clés configurées</p>
+                  <p className="mt-0.5 text-[8px] text-muted-foreground/50">
+                    Activez « Satellite (Sentinel-2) » dans les couches pour voir NDVI / True Color / NDWI
+                  </p>
+                  <p className="mt-1 text-[7px] text-muted-foreground/30">
+                    Données : ESA Copernicus · CC BY-SA 4.0
+                  </p>
+                </>
+              )}
+            </div>
 
             {/* Météo */}
             <div className="rounded border border-border/40 p-2.5">
