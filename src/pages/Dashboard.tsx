@@ -146,17 +146,30 @@ async function fetchWeather(): Promise<WeatherPoint[]> {
   return results.filter((x): x is WeatherPoint => x !== null);
 }
 
-async function fetchFirms(apiKey: string): Promise<HotspotData[]> {
+async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; error: string | null }> {
   const bbox = "-1.35,44.15,0.35,45.60";
-  const fetchCSV = (url: string) => fetch(url).then((r) => (r.ok ? r.text() : "")).catch(() => "");
-  const [csv1, csv2] = await Promise.all([
-    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_SNPP_NRT/1/${bbox}`),
-    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/1/${bbox}`),
+  // Note: le format FIRMS officiel est /csv/{MAP_KEY}/{SOURCE}/{AREA}/{DAY_RANGE}
+  const fetchCSV = async (url: string) => {
+    const r = await fetch(url);
+    if (!r.ok) {
+      const text = await r.text().catch(() => "");
+      return { text: "", error: text.includes("Invalid MAP_KEY") ? "CLÉ_INVALIDE" : null };
+    }
+    return { text: await r.text(), error: null };
+  };
+  const [r1, r2, r3] = await Promise.all([
+    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_SNPP_NRT/${bbox}/1`),
+    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/VIIRS_NOAA20_NRT/${bbox}/1`),
+    fetchCSV(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/MODIS_NRT/${bbox}/1`),
   ]);
+  // Détecter clé invalide
+  if (r1.error === "CLÉ_INVALIDE" || r2.error === "CLÉ_INVALIDE") {
+    return { hotspots: [], error: "Clé FIRMS invalide — vérifie la clé sur firms.modaps.eosdis.nasa.gov" };
+  }
   const all: HotspotData[] = [];
-  for (const csv of [csv1, csv2]) {
-    if (!csv) continue;
-    const lines = csv.trim().split("\n");
+  for (const r of [r1, r2, r3]) {
+    if (!r.text) continue;
+    const lines = r.text.trim().split("\n");
     if (lines.length < 2) continue;
     const headers = lines[0].split(",").map((h) => h.trim());
     for (let i = 1; i < lines.length; i++) {
@@ -185,7 +198,7 @@ async function fetchFirms(apiKey: string): Promise<HotspotData[]> {
     }
   }
   all.sort((a, b) => b.frp - a.frp);
-  return all;
+  return { hotspots: all, error: null };
 }
 
 // ── Composant ──────────────────────────────────────────────────────────
@@ -217,11 +230,14 @@ export default function Dashboard() {
       const [w, h, aq] = await Promise.all([
         fetchWeather(),
         firmsConfigured && firmsKey
-          ? fetchFirms(firmsKey).catch(() => {
-              setError("FIRMS : erreur de récupération — clé invalide ?");
+          ? fetchFirms(firmsKey).then((r) => {
+              if (r.error) setError(r.error);
+              return r.hotspots;
+            }).catch(() => {
+              setError("FIRMS : erreur réseau");
               return [];
             })
-          : Promise.resolve([]),
+          : Promise.resolve([] as HotspotData[]),
         openaqConfigured && openaqKey
           ? fetchAirQuality(openaqKey).catch(() => ({
               pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "",
@@ -267,8 +283,8 @@ export default function Dashboard() {
     // FIRMS : rafraîchir toutes les 15 minutes
     const firmsInterval = setInterval(() => {
       if (firmsConfigured && firmsKey) {
-        fetchFirms(firmsKey).then((h) => {
-          if (h.length > 0) setHotspots(h);
+        fetchFirms(firmsKey).then((r) => {
+          if (r.hotspots.length > 0) setHotspots(r.hotspots);
         });
       }
     }, 15 * 60 * 1000);
