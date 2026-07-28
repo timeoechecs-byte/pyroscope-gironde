@@ -22,6 +22,9 @@ import { action } from "./_generated/server";
 
 // ── Constantes ─────────────────────────────────────────────────────────
 
+// Endpoint OAuth2 Copernicus Data Space (valide pour Sentinel Hub sh-* clients).
+// Note : le sous-domaine sh.dataspace renvoie 503 sur le token endpoint — on garde
+// donc identity.dataspace qui renvoie au moins un 401 propre sur credentials invalides.
 const CDSE_TOKEN_URL =
   "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token";
 

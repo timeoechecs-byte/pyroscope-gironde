@@ -86,27 +86,41 @@ interface AirQualityData {
   aod: number | null;
   uvIndex: number | null;
   time: string;
+  error: string | null;
 }
 
 // ── API calls ──────────────────────────────────────────────────────────
 
 async function fetchAirQuality(apiKey: string): Promise<AirQualityData> {
-  const empty = { pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" };
+  const empty: AirQualityData = { pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null };
   try {
-    // Coordonnées centre Gironde
+    // OpenAQ v3 : locate (source de stations) + latest (mesures)
+    // L'endpoint v2 a été retiré (HTTP 410) — toutes les clés v2 ne fonctionnent plus.
     const lat = 44.8, lon = -0.5;
     const r = await fetch(
-      `https://api.openaq.org/v2/latest?coordinates=${lat},${lon}&radius=100000&limit=5`,
+      `https://api.openaq.org/v3/locations?coordinates=${lat},${lon}&radius=50000&limit=1`,
       { headers: { "X-API-Key": apiKey } },
     );
-    if (!r.ok) return empty;
+    if (r.status === 401 || r.status === 403) {
+      return { ...empty, error: "Clé OpenAQ invalide ou obsolète (v3 requise)" };
+    }
+    if (!r.ok) {
+      return { ...empty, error: `OpenAQ erreur ${r.status}` };
+    }
     const j = await r.json();
-    if (!j?.results?.[0]?.measurements) return empty;
-    const measurements = j.results[0].measurements as Array<{ parameter: string; value: number }>;
+    const locId = j?.results?.[0]?.id;
+    if (!locId) return { ...empty, error: "Aucune station OpenAQ dans le rayon" };
+    // Récupération mesures depuis la station trouvée
+    const m = await fetch(
+      `https://api.openaq.org/v3/latest/${locId}`,
+      { headers: { "X-API-Key": apiKey } },
+    );
+    if (!m.ok) return { ...empty, error: `OpenAQ latest ${m.status}` };
+    const mj = await m.json();
+    const measurements = (mj?.results?.[0]?.parameters ?? []) as Array<{ parameter: string; value: number; lastUpdated: string }>;
     const findVal = (param: string) => {
-      // L'API peut retourner pm25, pm10, o3, no2, etc.
-      const m = measurements.find((m) => m.parameter === param);
-      return m ? m.value : null;
+      const p = measurements.find((x) => x.parameter === param);
+      return p ? p.value : null;
     };
     return {
       pm25: findVal("pm25"),
@@ -116,9 +130,10 @@ async function fetchAirQuality(apiKey: string): Promise<AirQualityData> {
       aod: findVal("aod") ?? findVal("aerosol_optical_depth"),
       uvIndex: findVal("uv_index"),
       time: new Date().toLocaleTimeString("fr-FR"),
+      error: null,
     };
-  } catch {
-    return empty;
+  } catch (e) {
+    return { ...empty, error: e instanceof Error ? e.message : "Erreur réseau OpenAQ" };
   }
 }
 
@@ -219,7 +234,7 @@ export default function Dashboard() {
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
-  const [airQuality, setAirQuality] = useState<AirQualityData>({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" });
+  const [airQuality, setAirQuality] = useState<AirQualityData>({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -240,9 +255,9 @@ export default function Dashboard() {
           : Promise.resolve([] as HotspotData[]),
         openaqConfigured && openaqKey
           ? fetchAirQuality(openaqKey).catch(() => ({
-              pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "",
+              pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
             }))
-          : Promise.resolve({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" }),
+          : Promise.resolve({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null } as AirQualityData),
       ]);
       setWeather(w);
       setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
@@ -262,7 +277,7 @@ export default function Dashboard() {
     if (!openaqConfigured || !openaqKey) return;
     const aqInterval = setInterval(() => {
       fetchAirQuality(openaqKey).then((aq) => {
-        if (aq.pm25 !== null || aq.pm10 !== null) setAirQuality(aq);
+        if (aq.pm25 !== null || aq.pm10 !== null || aq.error) setAirQuality(aq);
       });
     }, 15 * 60 * 1000);
     return () => clearInterval(aqInterval);
@@ -541,14 +556,23 @@ export default function Dashboard() {
             </div>
 
             {/* Qualité de l'air */}
-            <div className="rounded border border-border/40 p-2.5">
+            <div
+              data-source-status={airQuality.error ? "invalid-key" : openaqConfigured && (airQuality.pm25 !== null || airQuality.pm10 !== null) ? "ok" : "unavailable"}
+              className={`rounded border p-2.5 transition-colors ${
+                airQuality.error
+                  ? "border-red-900/40 bg-red-950/10"
+                  : "border-border/40"
+              }`}
+            >
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
                 <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air (OpenAQ)
               </p>
               {!openaqConfigured ? (
                 <p className="text-[9px] text-yellow-600/70">Clé manquante — définir VITE_OPENAQ_API_KEY dans Keys UI</p>
+              ) : airQuality.error ? (
+                <p className="text-[9px] text-red-400 font-medium">⚠ {airQuality.error}</p>
               ) : airQuality.pm25 === null && airQuality.pm10 === null ? (
-                <p className="text-[9px] text-muted-foreground/50">Aucune donnée disponible</p>
+                <p className="text-[9px] text-muted-foreground/50">Aucune station dans le rayon</p>
               ) : (
                 <>
                   <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">
