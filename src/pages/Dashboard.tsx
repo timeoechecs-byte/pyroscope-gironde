@@ -18,7 +18,7 @@ import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
-import { getFirmsApiKey, hasFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
+import { getFirmsApiKey, hasFirmsApiKey, getCdseConfig } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -91,49 +91,31 @@ interface AirQualityData {
 
 // ── API calls ──────────────────────────────────────────────────────────
 
-async function fetchAirQuality(apiKey: string): Promise<AirQualityData> {
+async function fetchAirQuality(): Promise<AirQualityData> {
   const empty: AirQualityData = { pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null };
   try {
-    // OpenAQ v3 : locate (source de stations) + latest (mesures)
-    // L'endpoint v2 a été retiré (HTTP 410) — toutes les clés v2 ne fonctionnent plus.
+    // Open-Meteo Air Quality (gratuit, sans clé, basé sur CAMS Copernicus).
+    // Remplace OpenAQ v3 qui refusait toutes les clés soumises.
     const lat = 44.8, lon = -0.5;
     const r = await fetch(
-      `https://api.openaq.org/v3/locations?coordinates=${lat},${lon}&radius=50000&limit=1`,
-      { headers: { "X-API-Key": apiKey } },
+      `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm10,pm2_5,aerosol_optical_depth,uv_index,ozone,nitrogen_dioxide&timezone=auto`,
     );
-    if (r.status === 401 || r.status === 403) {
-      return { ...empty, error: "Clé OpenAQ invalide ou obsolète (v3 requise)" };
-    }
-    if (!r.ok) {
-      return { ...empty, error: `OpenAQ erreur ${r.status}` };
-    }
+    if (!r.ok) return { ...empty, error: `Open-Meteo AQ ${r.status}` };
     const j = await r.json();
-    const locId = j?.results?.[0]?.id;
-    if (!locId) return { ...empty, error: "Aucune station OpenAQ dans le rayon" };
-    // Récupération mesures depuis la station trouvée
-    const m = await fetch(
-      `https://api.openaq.org/v3/latest/${locId}`,
-      { headers: { "X-API-Key": apiKey } },
-    );
-    if (!m.ok) return { ...empty, error: `OpenAQ latest ${m.status}` };
-    const mj = await m.json();
-    const measurements = (mj?.results?.[0]?.parameters ?? []) as Array<{ parameter: string; value: number; lastUpdated: string }>;
-    const findVal = (param: string) => {
-      const p = measurements.find((x) => x.parameter === param);
-      return p ? p.value : null;
-    };
+    const c = j?.current;
+    if (!c) return { ...empty, error: "Aucune donnée reçue" };
     return {
-      pm25: findVal("pm25"),
-      pm10: findVal("pm10"),
-      o3: findVal("o3"),
-      no2: findVal("no2"),
-      aod: findVal("aod") ?? findVal("aerosol_optical_depth"),
-      uvIndex: findVal("uv_index"),
+      pm25: c.pm2_5 ?? null,
+      pm10: c.pm10 ?? null,
+      o3: c.ozone ?? null,
+      no2: c.nitrogen_dioxide ?? null,
+      aod: c.aerosol_optical_depth ?? null,
+      uvIndex: c.uv_index ?? null,
       time: new Date().toLocaleTimeString("fr-FR"),
       error: null,
     };
   } catch (e) {
-    return { ...empty, error: e instanceof Error ? e.message : "Erreur réseau OpenAQ" };
+    return { ...empty, error: e instanceof Error ? e.message : "Erreur réseau Open-Meteo" };
   }
 }
 
@@ -225,8 +207,6 @@ export default function Dashboard() {
   // ── Clés API (hardcodées dans api-keys.ts) ─────────────────────
   const firmsKey = getFirmsApiKey();
   const firmsConfigured = hasFirmsApiKey();
-  const openaqKey = getOpenAqApiKey();
-  const openaqConfigured = hasOpenAqApiKey();
   const cdseConfig = getCdseConfig();
   const cdseConfigured = Boolean(cdseConfig.clientId && cdseConfig.clientSecret);
 
@@ -253,11 +233,9 @@ export default function Dashboard() {
               return [];
             })
           : Promise.resolve([] as HotspotData[]),
-        openaqConfigured && openaqKey
-          ? fetchAirQuality(openaqKey).catch(() => ({
-              pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
-            }))
-          : Promise.resolve({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: null } as AirQualityData),
+        fetchAirQuality().catch(() => ({
+          pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "", error: "Erreur réseau",
+        })),
       ]);
       setWeather(w);
       setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
@@ -270,18 +248,17 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [firmsKey, firmsConfigured, openaqKey, openaqConfigured]);
+  }, [firmsKey, firmsConfigured]);
 
-  // Re-fetch air quality toutes les 15 minutes aussi (en arrière-plan)
+  // Re-fetch air quality toutes les 15 minutes (gratuit, sans cle, appel direct possible)
   useEffect(() => {
-    if (!openaqConfigured || !openaqKey) return;
     const aqInterval = setInterval(() => {
-      fetchAirQuality(openaqKey).then((aq) => {
+      fetchAirQuality().then((aq) => {
         if (aq.pm25 !== null || aq.pm10 !== null || aq.error) setAirQuality(aq);
       });
     }, 15 * 60 * 1000);
     return () => clearInterval(aqInterval);
-  }, [openaqKey, openaqConfigured]);
+  }, []);
 
   // Chargement initial + rafraîchissement automatique
   useEffect(() => {
@@ -520,7 +497,12 @@ export default function Dashboard() {
             )}
 
             {/* CDSE Sentinel-2 */}
-            <div className="rounded border border-border/40 p-2.5">
+            <div
+              data-source-status={cdseConfigured ? "wms-unknown" : "missing"}
+              className={`rounded border p-2.5 transition-colors ${
+                cdseConfigured ? "border-orange-900/40 bg-orange-950/10" : "border-border/40"
+              }`}
+            >
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
                 <Trees className="h-3 w-3" /> Copernicus Sentinel-2
               </p>
@@ -530,9 +512,12 @@ export default function Dashboard() {
                 </p>
               ) : (
                 <>
-                  <p className="text-[9px] text-green-600/70">✓ Clés configurées</p>
+                  <p className="text-[9px] text-green-600/70">✓ OAuth token obtenu (HTTP 200)</p>
+                  <p className="text-[9px] text-orange-500/80 font-medium mt-0.5">
+                    ⚠ WMS endpoint à investiguer (chemin /ogc/wms/sentinel-2-l2a → 404)
+                  </p>
                   <p className="mt-0.5 text-[8px] text-muted-foreground/50">
-                    Activez « Satellite (Sentinel-2) » dans les couches pour voir NDVI / True Color / NDWI
+                    Token valide mais instance Sentinel Hub requise pour WMS
                   </p>
                   <p className="mt-1 text-[7px] text-muted-foreground/30">
                     Données : ESA Copernicus · CC BY-SA 4.0
@@ -555,9 +540,9 @@ export default function Dashboard() {
               <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {weatherTime}</p>
             </div>
 
-            {/* Qualité de l'air */}
+            {/* Qualité de l'air — Open-Meteo Air Quality (gratuit, sans cle, base CAMS Copernicus) */}
             <div
-              data-source-status={airQuality.error ? "invalid-key" : openaqConfigured && (airQuality.pm25 !== null || airQuality.pm10 !== null) ? "ok" : "unavailable"}
+              data-source-status={airQuality.error ? "error" : (airQuality.pm25 !== null || airQuality.pm10 !== null) ? "ok" : "unavailable"}
               className={`rounded border p-2.5 transition-colors ${
                 airQuality.error
                   ? "border-red-900/40 bg-red-950/10"
@@ -565,14 +550,13 @@ export default function Dashboard() {
               }`}
             >
               <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air (OpenAQ)
+                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air (Open-Meteo)
               </p>
-              {!openaqConfigured ? (
-                <p className="text-[9px] text-yellow-600/70">Clé manquante — définir VITE_OPENAQ_API_KEY dans Keys UI</p>
-              ) : airQuality.error ? (
-                <p className="text-[9px] text-red-400 font-medium">⚠ {airQuality.error}</p>
+              <p className="text-[9px] text-green-600/70">✓ Sans clé, données CAMS Copernicus directes</p>
+              {airQuality.error ? (
+                <p className="text-[9px] text-red-400 font-medium mt-1">⚠ {airQuality.error}</p>
               ) : airQuality.pm25 === null && airQuality.pm10 === null ? (
-                <p className="text-[9px] text-muted-foreground/50">Aucune station dans le rayon</p>
+                <p className="text-[9px] text-muted-foreground/50 mt-1">Aucune donnée reçue</p>
               ) : (
                 <>
                   <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">

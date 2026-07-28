@@ -25,11 +25,11 @@ export interface ApiKeys {
 
 const HARDCODED: ApiKeys = {
   firms: "3622edb968086a7ed8d44e197cfdde1c",
-  openaq: "f06fe88c4300b34ce20a803fc6fc0bdb5b6135816607e8fb4288ca891d2f8397",
-  cdseClientId: "sh-a9b0ecc2-52bc-4888-9854-b9b9e9e56de0",
-  cdseClientSecret: "cihDUe1g3NyeY241PBLAC6mVZy6F9dZR",
+  openaq: "d25911226286cc6d6523b3384e85b23a82f4533d7d2bf56076adbaf54b485c14",
+  cdseClientId: "sh-a9b0ecc2-52bc-4888-9854-b9b9e9e560e0",
+  cdseClientSecret: "cihDUelg3NyeY24lPBLAC6mVZy6F9dZR",
   cdseBaseUrl: "https://sh.dataspace.copernicus.eu",
-  cdsApiToken: "2c63426d-50a5-44af-899e-8a4c35a75a65",
+  cdsApiToken: "2e63426d-50a5-44af-899e-8a4c35a75a65",
 };
 
 // ── LECTURE (hardcode → env → localStorage) ────────────────────────────
