@@ -1,18 +1,21 @@
 /**
  * PyroScope 33 — Dashboard (refonte feugironde.fr-style).
  *
- * Carte en accès libre (pas d'auth requise), avec :
- * 1. Bandeau légal sticky en haut
+ * Carte en accès libre (pas d'auth requise) :
+ * 1. Bandeau légal sticky en haut (monté à la racine dans main.tsx)
  * 2. StatsBar sticky (KPIs temps réel)
- * 3. FilterBar sticky (filtres période, FRP, couches)
+ * 3. FilterBar sticky (période, couches)
  * 4. Carte MapContainer plein écran
- * 5. Sections empilées : couches, qualité de l'air, météo, surfaces brûlées,
- *    consignes officielles, sources.
+ * 5. Sections empilées : couches, surfaces brûlées, qualité de l'air,
+ *    météo, Sentinel-2, consignes officielles, sources.
+ *
+ * NOTE : tous les sous-composants sont déclarés au NIVEAU MODULE
+ * (pas à l'intérieur de `Dashboard`), sinon React recrée leur référence
+ * à chaque render (warning "Cannot create components during render").
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, type ElementType, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import MapContainer from "@/components/MapContainer";
 import HotspotLayer from "@/components/HotspotLayer";
@@ -20,7 +23,6 @@ import type { HotspotData } from "@/components/HotspotLayer";
 import WindParticlesLayer from "@/components/WindParticlesLayer";
 import IsothermLayer from "@/components/IsothermLayer";
 import FirePerimeterLayer from "@/components/FirePerimeterLayer";
-import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
 import {
@@ -48,7 +50,10 @@ import {
 } from "lucide-react";
 import { Link } from "react-router";
 
-// ── Grille météo Gironde (~10 km) ─────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+// Types + grilles + API calls
+// ════════════════════════════════════════════════════════════════════════
+
 const GRID = [
   { lat: 44.3, lon: -1.2 }, { lat: 44.3, lon: -0.7 }, { lat: 44.3, lon: -0.2 },
   { lat: 44.7, lon: -1.2 }, { lat: 44.7, lon: -0.7 }, { lat: 44.7, lon: -0.2 },
@@ -60,6 +65,20 @@ interface WeatherPoint {
   lat: number; lon: number;
   temp: number; humidity: number; precip: number;
   wind_speed: number; wind_dir: number; wind_gusts: number;
+}
+
+interface AirQualityData {
+  source: "openaq" | "openmeteo";
+  stationName: string;
+  pm25: number | null;
+  pm10: number | null;
+  o3: number | null;
+  no2: number | null;
+  so2: number | null;
+  aod: number | null;
+  uvIndex: number | null;
+  time: string;
+  error: string | null;
 }
 
 function calcFireRisk(pts: WeatherPoint[]): number {
@@ -84,22 +103,6 @@ function riskLevel(score: number) {
   if (score < 75) return { label: "Élevé", color: "text-red-700 dark:text-red-300", bg: "bg-red-100 dark:bg-red-950/40 border-red-300 dark:border-red-800" };
   return { label: "Très élevé", color: "text-red-900 dark:text-red-200", bg: "bg-red-200 dark:bg-red-950/60 border-red-500 dark:border-red-700" };
 }
-
-interface AirQualityData {
-  source: "openaq" | "openmeteo";
-  stationName: string;
-  pm25: number | null;
-  pm10: number | null;
-  o3: number | null;
-  no2: number | null;
-  so2: number | null;
-  aod: number | null;
-  uvIndex: number | null;
-  time: string;
-  error: string | null;
-}
-
-// ── API calls ──────────────────────────────────────────────────────────
 
 async function fetchAirQuality(): Promise<AirQualityData> {
   const empty: AirQualityData = {
@@ -259,16 +262,187 @@ async function fetchFirms(apiKey: string): Promise<{ hotspots: HotspotData[]; er
   return { hotspots: all, error: null };
 }
 
-// ── Composant principal ───────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+// Sous-composants au niveau MODULE (sinon bug React "Cannot create
+// components during render" : React recrée leur référence à chaque
+// render du parent).
+// ════════════════════════════════════════════════════════════════════════
+
+interface SectionProps {
+  title: string;
+  icon: ElementType;
+  children: ReactNode;
+  badge?: string;
+  open: boolean;
+  onToggle: () => void;
+}
+
+function Section({ title, icon: Icon, children, badge, open, onToggle }: SectionProps) {
+  return (
+    <section className="border-b border-border/40">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center justify-between px-4 py-4 text-left hover:bg-accent/20 transition-colors sm:px-6"
+      >
+        <div className="flex items-center gap-2">
+          <Icon className="h-4 w-4 text-fire-500" />
+          <h2 className="text-sm font-bold uppercase tracking-wide">{title}</h2>
+          {badge && (
+            <Badge variant="outline" className="ml-2 border-fire-700/40 text-[10px] text-fire-700">
+              {badge}
+            </Badge>
+          )}
+        </div>
+        {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+      </button>
+      {open && <div className="px-4 pb-6 sm:px-6">{children}</div>}
+    </section>
+  );
+}
+
+interface StatChipProps {
+  label: string;
+  value: string;
+  tone?: "muted" | "safe" | "warning" | "fire";
+  icon: ElementType;
+}
+
+function StatChip({ label, value, tone = "muted", icon: Icon }: StatChipProps) {
+  const toneClass = {
+    muted: "text-muted-foreground bg-transparent border-border/40",
+    safe: "text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800",
+    warning: "text-orange-700 dark:text-orange-300 bg-orange-100/60 dark:bg-orange-950/40 border-orange-300 dark:border-orange-800",
+    fire: "text-fire-700 dark:text-fire-300 bg-fire-950/40 border-fire-300 dark:border-fire-800",
+  }[tone];
+  return (
+    <div className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 ${toneClass}`}>
+      <Icon className="h-3 w-3 shrink-0 opacity-70" />
+      <span className="text-[9px] uppercase tracking-wide opacity-70">{label}</span>
+      <strong className="text-xs">{value}</strong>
+    </div>
+  );
+}
+
+interface LayerCardProps {
+  active: boolean;
+  onToggle: () => void;
+  color: string;
+  title: string;
+  desc: string;
+  stat?: string;
+}
+
+function LayerCard({ active, onToggle, color, title, desc, stat }: LayerCardProps) {
+  return (
+    <button
+      onClick={onToggle}
+      className={`text-left rounded-lg border p-3 transition-colors ${
+        active
+          ? "border-fire-700/60 bg-fire-50/40 dark:bg-fire-950/30"
+          : "border-border/40 bg-card/30 opacity-60 hover:opacity-90"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <span className={`h-3 w-3 rounded-full ${active ? color : "bg-muted-foreground/40"}`} />
+        <span className="text-xs font-bold">{title}</span>
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{desc}</p>
+      {stat && <p className="mt-2 text-xs font-semibold text-foreground">{stat}</p>}
+    </button>
+  );
+}
+
+interface PollutentCardProps {
+  label: string;
+  unit: string;
+  value: number | null;
+  limit: number;
+}
+
+function PollutentCard({ label, unit, value, limit }: PollutentCardProps) {
+  const overLimit = value !== null && value > limit;
+  const tone = value === null
+    ? "muted"
+    : overLimit
+      ? "fire"
+      : value > limit * 0.7
+        ? "warning"
+        : "safe";
+  const tones = {
+    muted: "border-border/40 text-muted-foreground",
+    safe: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300",
+    warning: "border-orange-300 dark:border-orange-800 text-orange-700 dark:text-orange-300",
+    fire: "border-red-300 dark:border-red-800 text-red-700 dark:text-red-300",
+  };
+  return (
+    <div className={`rounded-lg border p-3 ${tones[tone]}`}>
+      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+      <p className="text-2xl font-bold">
+        {value !== null ? value.toFixed(unit === "µg/m³" ? 1 : unit === "" ? 3 : 1) : "—"}
+        <span className="ml-1 text-[10px] font-normal opacity-60">{unit}</span>
+      </p>
+      <p className="text-[10px] opacity-60">limite OMS : {limit} {unit || "idx"}</p>
+    </div>
+  );
+}
+
+interface WeatherCardProps {
+  label: string;
+  value: string;
+  detail: string;
+}
+
+function WeatherCard({ label, value, detail }: WeatherCardProps) {
+  return (
+    <div className="rounded-lg border border-border/40 bg-card/30 p-3">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 text-2xl font-bold">{value}</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+type SafetyVariant = "emergency" | "warning" | "info";
+
+interface SafetyCardProps {
+  variant: SafetyVariant;
+  icon: ElementType;
+  title: string;
+  body: ReactNode;
+}
+
+function SafetyCard({ variant, icon: Icon, title, body }: SafetyCardProps) {
+  const variants: Record<SafetyVariant, string> = {
+    emergency: "border-red-500 bg-red-50 dark:bg-red-950/30",
+    warning: "border-orange-500 bg-orange-50 dark:bg-orange-950/30",
+    info: "border-blue-500 bg-blue-50 dark:bg-blue-950/30",
+  };
+  const iconColor: Record<SafetyVariant, string> = {
+    emergency: "text-red-600",
+    warning: "text-orange-600",
+    info: "text-blue-600",
+  };
+  return (
+    <div className={`rounded-lg border-2 p-4 ${variants[variant]}`}>
+      <div className="mb-2 flex items-center gap-2">
+        <Icon className={`h-5 w-5 ${iconColor[variant]}`} />
+        <h3 className="text-sm font-bold">{title}</h3>
+      </div>
+      <p className="text-xs leading-relaxed">{body}</p>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Composant principal
+// ════════════════════════════════════════════════════════════════════════
 
 export default function Dashboard() {
-  // ── Clés API ──
   const firmsKey = getFirmsApiKey();
   const firmsConfigured = hasFirmsApiKey();
   const cdseConfig = getCdseConfig();
   const cdseConfigured = Boolean(cdseConfig.clientId && cdseConfig.clientSecret);
 
-  // ── Données ──
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
@@ -287,10 +461,11 @@ export default function Dashboard() {
         fetchWeather(),
         firmsConfigured && firmsKey
           ? fetchFirms(firmsKey).then((r) => {
-              if (r.error) setError(r.error);
+              // Différer le setError pour éviter setState synchrone dans .then
+              queueMicrotask(() => { if (r.error) setError(r.error); });
               return r.hotspots;
             }).catch(() => {
-              setError("FIRMS : erreur réseau");
+              queueMicrotask(() => setError("FIRMS : erreur réseau"));
               return [];
             })
           : Promise.resolve([] as HotspotData[]),
@@ -343,7 +518,6 @@ export default function Dashboard() {
     };
   }, [load, firmsConfigured, firmsKey]);
 
-  // ── Filtres + couches ──
   const [period, setPeriod] = useState<"24h" | "48h" | "7j">("24h");
   const [layers, setLayers] = useState({
     hotspots: true,
@@ -353,9 +527,8 @@ export default function Dashboard() {
     ndvi: false,
   });
   const [sentinelLayer, setSentinelLayer] = useState<"ndvi" | "true_color" | "ndwi">("ndvi");
-  const toggle = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
+  const toggleLayer = (k: keyof typeof layers) => setLayers((p) => ({ ...p, [k]: !p[k] }));
 
-  // ── KPIs calculés ──
   const riskScore = calcFireRisk(weather);
   const risk = riskLevel(riskScore);
   const avgTemp = weather.length ? Math.round((weather.reduce((s, p) => s + p.temp, 0) / weather.length) * 10) / 10 : 0;
@@ -367,46 +540,18 @@ export default function Dashboard() {
     () => (hotspots.length >= 3 ? estimateFirePerimeters(hotspots) : []),
     [hotspots],
   );
-  const totalBurnedHa = perimeters.reduce((s, p) => s + p.areaHa, 0);
   const totalBurnedHaBuf = perimeters.reduce((s, p) => s + p.areaHaBuffered, 0);
-  const confirmedFires = perimeters.filter((p) => p.confidence === "confirmé").length;
-  const lastDetection = hotspots.length > 0 ? hotspots[0] : null;
-
   const hotspotsOk = hotspots.length > 0;
+  const lastDetection = hotspots.length > 0 ? hotspots[0] : null;
   const windGrid = weather.map((p) => ({
     lon: p.lon, lat: p.lat,
     u: -(p.wind_speed * Math.sin((p.wind_dir * Math.PI) / 180)),
     v: -(p.wind_speed * Math.cos((p.wind_dir * Math.PI) / 180)),
   }));
 
-  // ── Sections pliables ──
   const [openSection, setOpenSection] = useState<string | null>("layers");
-
-  const Section = ({ id, title, icon: Icon, children, badge }: {
-    id: string; title: string; icon: typeof Flame; children: React.ReactNode; badge?: string;
-  }) => {
-    const open = openSection === id;
-    return (
-      <section className="border-b border-border/40">
-        <button
-          onClick={() => setOpenSection(open ? null : id)}
-          className="flex w-full items-center justify-between px-4 py-4 text-left hover:bg-accent/20 transition-colors sm:px-6"
-        >
-          <div className="flex items-center gap-2">
-            <Icon className="h-4 w-4 text-fire-500" />
-            <h2 className="text-sm font-bold uppercase tracking-wide">{title}</h2>
-            {badge && (
-              <Badge variant="outline" className="ml-2 border-fire-700/40 text-[10px] text-fire-700">
-                {badge}
-              </Badge>
-            )}
-          </div>
-          {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </button>
-        {open && <div className="px-4 pb-6 sm:px-6">{children}</div>}
-      </section>
-    );
-  };
+  const toggleSection = (id: string) =>
+    setOpenSection((cur) => (cur === id ? null : id));
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -416,62 +561,28 @@ export default function Dashboard() {
           <div className="flex items-center gap-3 overflow-x-auto">
             <div className="flex items-center gap-1.5 shrink-0">
               <Flame className="h-4 w-4 text-fire-500" />
-              <span className="text-xs font-bold tracking-tight hidden sm:inline">PyroScope<span className="text-fire-500">33</span></span>
+              <span className="text-xs font-bold tracking-tight hidden sm:inline">
+                PyroScope<span className="text-fire-500">33</span>
+              </span>
             </div>
-
             <div className="h-6 w-px bg-border/60 shrink-0" />
 
-            {/* KPI 1 : détections 24h */}
-            <StatChip
-              label="Détections 24h"
-              value={hotspots.length.toString()}
-              tone={hotspotsOk ? "fire" : "muted"}
-              icon={Satellite}
-            />
-            {/* KPI 2 : FRP totale */}
-            <StatChip
-              label="FRP totale"
-              value={`${totalFrp.toFixed(1)} MW`}
-              tone={totalFrp > 5 ? "fire" : "muted"}
-              icon={Flame}
-            />
-            {/* KPI 3 : Surface brûlée */}
-            <StatChip
-              label="Surface brûlée est."
+            <StatChip label="Détections 24h" value={hotspots.length.toString()}
+              tone={hotspotsOk ? "fire" : "muted"} icon={Satellite} />
+            <StatChip label="FRP totale" value={`${totalFrp.toFixed(1)} MW`}
+              tone={totalFrp > 5 ? "fire" : "muted"} icon={Flame} />
+            <StatChip label="Surface brûlée est."
               value={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha` : "—"}
-              tone={totalBurnedHaBuf > 0 ? "fire" : "muted"}
-              icon={MapIcon}
-            />
-            {/* KPI 4 : Risque */}
-            <StatChip
-              label="Risque"
-              value={`${riskScore}/100`}
+              tone={totalBurnedHaBuf > 0 ? "fire" : "muted"} icon={MapIcon} />
+            <StatChip label="Risque" value={`${riskScore}/100`}
               tone={riskScore > 55 ? "fire" : riskScore > 15 ? "warning" : "safe"}
-              icon={ShieldAlert}
-            />
-            {/* KPI 5 : T° moyenne */}
-            <StatChip
-              label="T° moy."
-              value={`${avgTemp}°C`}
-              tone="muted"
-              icon={Thermometer}
-            />
-            {/* KPI 6 : Vent moyen */}
-            <StatChip
-              label="Vent moy."
-              value={`${avgWind} km/h`}
-              tone="muted"
-              icon={Wind}
-            />
+              icon={ShieldAlert} />
+            <StatChip label="T° moy." value={`${avgTemp}°C`} icon={Thermometer} />
+            <StatChip label="Vent moy." value={`${avgWind} km/h`} icon={Wind} />
 
             <div className="ml-auto flex shrink-0 items-center gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-[10px]"
-                onClick={load}
-                disabled={loading}
-              >
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-[10px]"
+                onClick={load} disabled={loading}>
                 <RefreshCw className={`mr-1 h-3 w-3 ${loading ? "animate-spin" : ""}`} />
                 Actualiser
               </Button>
@@ -480,8 +591,7 @@ export default function Dashboard() {
                 className="hidden h-7 items-center rounded-md border border-border/50 bg-background px-2.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/40 sm:flex"
                 title="Compte optionnel : cellules surveillées, alertes e-mail"
               >
-                <Eye className="mr-1 h-3 w-3" />
-                Mon compte
+                <Eye className="mr-1 h-3 w-3" /> Mon compte
               </Link>
             </div>
           </div>
@@ -493,15 +603,10 @@ export default function Dashboard() {
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-3 py-2 sm:px-6">
           <div className="flex items-center gap-1 rounded-md border border-border/50 bg-background p-0.5">
             {(["24h", "48h", "7j"] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
+              <button key={p} onClick={() => setPeriod(p)}
                 className={`rounded px-2.5 py-1 text-[10px] font-medium transition-colors ${
                   period === p ? "bg-fire-600 text-white" : "text-muted-foreground hover:bg-accent/30"
-                }`}
-              >
-                {p}
-              </button>
+                }`}>{p}</button>
             ))}
           </div>
 
@@ -513,32 +618,22 @@ export default function Dashboard() {
               ["perimeters", "🔥 Surfaces brûlées"],
               ["ndvi", "🌿 Satellite"],
             ] as const).map(([k, lbl]) => (
-              <button
-                key={k}
-                onClick={() => toggle(k)}
+              <button key={k} onClick={() => toggleLayer(k)}
                 className={`rounded-md px-2 py-1 text-[10px] font-medium border transition-colors ${
                   layers[k]
                     ? "border-fire-700/60 bg-fire-950/40 text-fire-300"
                     : "border-border/40 text-muted-foreground hover:bg-accent/30"
-                }`}
-              >
-                {lbl}
-              </button>
+                }`}>{lbl}</button>
             ))}
           </div>
 
           {layers.ndvi && (
             <div className="flex gap-1 rounded-md border border-border/50 bg-background p-0.5">
               {(["ndvi", "true_color", "ndwi"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSentinelLayer(s)}
+                <button key={s} onClick={() => setSentinelLayer(s)}
                   className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
                     sentinelLayer === s ? "bg-emerald-600 text-white" : "text-muted-foreground hover:bg-accent/30"
-                  }`}
-                >
-                  {s === "ndvi" ? "NDVI" : s === "true_color" ? "Couleur" : "NDWI"}
-                </button>
+                  }`}>{s === "ndvi" ? "NDVI" : s === "true_color" ? "Couleur" : "NDWI"}</button>
               ))}
             </div>
           )}
@@ -551,7 +646,9 @@ export default function Dashboard() {
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
           <HotspotLayer map={null as any} hotspots={hotspots} visible={layers.hotspots} />
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          <IsothermLayer map={null as any} data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }} visible={layers.temperature} />
+          <IsothermLayer map={null as any}
+            data={{ grid: weather.map((p) => ({ lon: p.lon, lat: p.lat, temperature: p.temp })) }}
+            visible={layers.temperature} />
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
           <WindParticlesLayer map={null as any} windData={{ grid: windGrid }} visible={layers.wind} />
           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
@@ -560,7 +657,6 @@ export default function Dashboard() {
           {layers.ndvi && <SentinelMapLayer map={null as any} layer={sentinelLayer} visible={layers.ndvi} />}
         </MapContainer>
 
-        {/* Overlay central : pas de carte en preview mode */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="rounded-lg border border-border/50 bg-background/80 px-4 py-3 text-center text-xs text-muted-foreground shadow backdrop-blur">
             <Layers className="mx-auto mb-1 h-5 w-5 text-fire-500" />
@@ -569,7 +665,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Overlay bas-gauche : dernière détection */}
         {lastDetection && (
           <div className="absolute bottom-3 left-3 max-w-xs rounded-lg border border-border/50 bg-background/85 px-3 py-2 text-[10px] text-foreground shadow backdrop-blur">
             <p className="font-bold text-fire-500">Dernière détection</p>
@@ -581,58 +676,40 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Overlay bas-droite : risque */}
         <div className={`absolute bottom-3 right-3 rounded-lg border-2 px-3 py-2 shadow-lg backdrop-blur ${risk.bg}`}>
           <p className={`text-[10px] font-bold ${risk.color}`}>RISQUE {risk.label.toUpperCase()}</p>
-          <p className={`text-2xl font-extrabold leading-none ${risk.color}`}>{riskScore}<span className="text-xs font-medium opacity-60">/100</span></p>
+          <p className={`text-2xl font-extrabold leading-none ${risk.color}`}>
+            {riskScore}<span className="text-xs font-medium opacity-60">/100</span>
+          </p>
         </div>
       </div>
 
       {/* ── Sections empilées sous la carte ──────────────────────────── */}
       <div className="mx-auto max-w-7xl">
-        {/* ── Couches & Légende ── */}
-        <Section id="layers" title="Couches de données" icon={Layers}>
+        <Section title="Couches de données" icon={Layers}
+          open={openSection === "layers"}
+          onToggle={() => toggleSection("layers")}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <LayerCard
-              active={layers.hotspots}
-              onToggle={() => toggle("hotspots")}
-              color="bg-fire-500"
-              title="Feux actifs (points chauds)"
+            <LayerCard active={layers.hotspots} onToggle={() => toggleLayer("hotspots")}
+              color="bg-fire-500" title="Feux actifs (points chauds)"
               desc="NASA FIRMS · VIIRS S-NPP & NOAA-20, MODIS · QUASI TEMPS RÉEL · délai 1-3h"
-              stat={hotspotsOk ? `${hotspots.length} sur 24h` : "0 sur 24h"}
-            />
-            <LayerCard
-              active={layers.temperature}
-              onToggle={() => toggle("temperature")}
-              color="bg-orange-400"
-              title="Température · Isothermes"
+              stat={hotspotsOk ? `${hotspots.length} sur 24h` : "0 sur 24h"} />
+            <LayerCard active={layers.temperature} onToggle={() => toggleLayer("temperature")}
+              color="bg-orange-400" title="Température · Isothermes"
               desc="Open-Meteo · modèle AROME ~1,5 km · 11 points de grille Gironde"
-              stat={`${avgTemp}°C moyenne`}
-            />
-            <LayerCard
-              active={layers.wind}
-              onToggle={() => toggle("wind")}
-              color="bg-sky-400"
-              title="Vent animé 10 m"
+              stat={`${avgTemp}°C moyenne`} />
+            <LayerCard active={layers.wind} onToggle={() => toggleLayer("wind")}
+              color="bg-sky-400" title="Vent animé 10 m"
               desc="Open-Meteo AROME HD · rafales, direction, vitesse · particules"
-              stat={`${avgWind} km/h moyenne`}
-            />
-            <LayerCard
-              active={layers.perimeters}
-              onToggle={() => toggle("perimeters")}
-              color="bg-red-600"
-              title="Surfaces brûlées estimées"
+              stat={`${avgWind} km/h moyenne`} />
+            <LayerCard active={layers.perimeters} onToggle={() => toggleLayer("perimeters")}
+              color="bg-red-600" title="Surfaces brûlées estimées"
               desc="Clustering conservatif sur hotspots VIIRS ≥3 détections · buffer +250 m"
-              stat={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha cumulées` : "aucune pour l'instant"}
-            />
-            <LayerCard
-              active={layers.ndvi}
-              onToggle={() => toggle("ndvi")}
-              color="bg-emerald-500"
-              title="Satellite Sentinel-2"
+              stat={totalBurnedHaBuf > 0 ? `~${Math.round(totalBurnedHaBuf)} ha cumulées` : "aucune pour l'instant"} />
+            <LayerCard active={layers.ndvi} onToggle={() => toggleLayer("ndvi")}
+              color="bg-emerald-500" title="Satellite Sentinel-2"
               desc="Copernicus CDSE OAuth2 · NDVI / Couleur / NDWI ⚠️ WMS en cours de débogage (chemin /ogc/wms → 404)"
-              stat={cdseConfigured ? "OAuth OK" : "Clés absentes"}
-            />
+              stat={cdseConfigured ? "OAuth OK" : "Clés absentes"} />
             <div className="rounded-lg border border-border/40 bg-card/30 p-4">
               <p className="flex items-center gap-2 text-xs font-semibold">
                 <span className="h-3 w-3 rounded-full bg-fire-500" />
@@ -649,9 +726,11 @@ export default function Dashboard() {
           </div>
         </Section>
 
-        {/* ── Surfaces brûlées ── */}
         {perimeters.length > 0 && (
-          <Section id="burned" title={`Surfaces brûlées estimées · ${perimeters.length} foyer${perimeters.length > 1 ? "s" : ""}`} icon={Flame} badge={`~${Math.round(totalBurnedHaBuf)} ha`}>
+          <Section title={`Surfaces brûlées estimées · ${perimeters.length} foyer${perimeters.length > 1 ? "s" : ""}`}
+            icon={Flame} badge={`~${Math.round(totalBurnedHaBuf)} ha`}
+            open={openSection === "burned"}
+            onToggle={() => toggleSection("burned")}>
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">
                 Estimation conservative par clustering des points chauds VIIRS ≥3 détections. Buffer +250 m autour de l'enveloppe convexe. <strong>Pas une mesure officielle</strong>.
@@ -672,14 +751,21 @@ export default function Dashboard() {
                         <td className="px-3 py-2 font-mono text-[10px]">{String(p.id).slice(0, 8)}</td>
                         <td className="px-3 py-2 text-right">
                           <strong>~{Math.round(p.areaHa)} ha</strong>
-                          <span className="ml-1 text-muted-foreground text-[10px]">(+ {Math.round(p.areaHaBuffered - p.areaHa)} buffer)</span>
+                          <span className="ml-1 text-muted-foreground text-[10px]">
+                            (+ {Math.round(p.areaHaBuffered - p.areaHa)} buffer)
+                          </span>
                         </td>
                         <td className="px-3 py-2 text-right text-[10px] text-muted-foreground">
                           {p.detectionCount} détection{p.detectionCount > 1 ? "s" : ""} · dernière {p.lastDate}
                         </td>
                         <td className="px-3 py-2">
-                          <Badge variant="outline" className={`text-[9px] ${p.confidence === "confirmé" ? "border-fire-700/60 text-fire-400" : p.confidence === "probable" ? "border-orange-700/60 text-orange-400" : "border-border text-muted-foreground"}`}>
-                            {p.confidence === "confirmé" ? "🔥 confirmé" : p.confidence === "probable" ? "⚠ probable" : "⚪ possible"}
+                          <Badge variant="outline" className={`text-[9px] ${
+                            p.confidence === "confirmé" ? "border-fire-700/60 text-fire-400" :
+                            p.confidence === "probable" ? "border-orange-700/60 text-orange-400" :
+                            "border-border text-muted-foreground"}`}>
+                            {p.confidence === "confirmé" ? "🔥 confirmé" :
+                             p.confidence === "probable" ? "⚠ probable" :
+                             "⚪ possible"}
                           </Badge>
                         </td>
                       </tr>
@@ -691,24 +777,21 @@ export default function Dashboard() {
           </Section>
         )}
 
-        {/* ── Qualité de l'air ── */}
-        <Section
-          id="air"
-          title="Qualité de l'air"
-          icon={Thermometer}
+        <Section title="Qualité de l'air" icon={Thermometer}
           badge={airQuality.source === "openaq" ? "OpenAQ · stations ATMO" : "Open-Meteo CAMS"}
-        >
+          open={openSection === "air"}
+          onToggle={() => toggleSection("air")}>
           {airQuality.error ? (
             <p className="text-sm text-red-500">⚠ {airQuality.error}</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <PollutentCard label="PM2.5" unit="µg/m³" value={airQuality.pm25} limit={15} />
               <PollutentCard label="PM10" unit="µg/m³" value={airQuality.pm10} limit={45} />
-              <PollutantCard label="O₃" unit="µg/m³" value={airQuality.o3} limit={120} />
-              <PollutantCard label="NO₂" unit="µg/m³" value={airQuality.no2} limit={40} />
-              {airQuality.so2 !== null && <PollutantCard label="SO₂" unit="µg/m³" value={airQuality.so2} limit={125} />}
-              {airQuality.aod !== null && <PollutantCard label="AOD" unit="" value={airQuality.aod} limit={0.3} />}
-              {airQuality.uvIndex !== null && <PollutantCard label="UV" unit="" value={airQuality.uvIndex} limit={8} />}
+              <PollutentCard label="O₃" unit="µg/m³" value={airQuality.o3} limit={120} />
+              <PollutentCard label="NO₂" unit="µg/m³" value={airQuality.no2} limit={40} />
+              {airQuality.so2 !== null && <PollutentCard label="SO₂" unit="µg/m³" value={airQuality.so2} limit={125} />}
+              {airQuality.aod !== null && <PollutentCard label="AOD" unit="" value={airQuality.aod} limit={0.3} />}
+              {airQuality.uvIndex !== null && <PollutentCard label="UV" unit="" value={airQuality.uvIndex} limit={8} />}
             </div>
           )}
           <p className="mt-3 text-[10px] text-muted-foreground">
@@ -716,26 +799,33 @@ export default function Dashboard() {
           </p>
         </Section>
 
-        {/* ── Météo détaillée ── */}
-        <Section id="weather" title="Météo · AROME HD" icon={Wind}>
+        <Section title="Météo · AROME HD" icon={Wind}
+          open={openSection === "weather"}
+          onToggle={() => toggleSection("weather")}>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <WeatherCard label="🌡 Température" value={`${avgTemp}°C`} detail="Moyenne 11 points Gironde" />
             <WeatherCard label="💧 Humidité relative" value={`${avgHum}%`} detail="Plus l'HR est basse, plus le risque est élevé" />
             <WeatherCard label="💨 Vent moyen 10 m" value={`${avgWind} km/h`} detail="Rafales visibles via couche animations" />
-            <WeatherCard label="🌧 Précipitations" value={weather.length ? `${weather[0].precip.toFixed(1)} mm` : "—"} detail="Référence : point central" />
+            <WeatherCard label="🌧 Précipitations"
+              value={weather.length ? `${weather[0].precip.toFixed(1)} mm` : "—"}
+              detail="Référence : point central" />
           </div>
           <p className="mt-3 text-[10px] text-muted-foreground">
             Source : Open-Meteo (modèle AROME France HD ~1,5 km) · MAJ {weatherTime} · Rafraîchissement auto toutes les 5 min
           </p>
         </Section>
 
-        {/* ── Sentinel-2 (CDSE) ── */}
-        <Section id="sentinel" title="Satellite Sentinel-2 (Copernicus)" icon={Trees} badge={cdseConfigured ? "OAuth OK" : "Clés manquantes"}>
+        <Section title="Satellite Sentinel-2 (Copernicus)" icon={Trees}
+          badge={cdseConfigured ? "OAuth OK" : "Clés manquantes"}
+          open={openSection === "sentinel"}
+          onToggle={() => toggleSection("sentinel")}>
           <div className="rounded-lg border border-border/40 bg-card/30 p-4">
             <p className="text-sm">
-              {cdseConfigured
-                ? <>✓ <strong>Token OAuth2 CDSE obtenu</strong> (HTTP 200). Activation du flux WMS en cours — le chemin <code className="rounded bg-card/60 px-1 text-[11px]">/ogc/wms/sentinel-2-l2a</code> renvoie actuellement 404. Sentinel Hub nécessite la création préalable d'une <em>Instance ID</em> via le dashboard CDSE.</>
-                : <>⚠ Identifiants CDSE absents. Active la couche NDVI/Couleur/NDWI haute résolution.</>}
+              {cdseConfigured ? (
+                <>✓ <strong>Token OAuth2 CDSE obtenu</strong> (HTTP 200). Activation du flux WMS en cours — le chemin <code className="rounded bg-card/60 px-1 text-[11px]">/ogc/wms/sentinel-2-l2a</code> renvoie actuellement 404. Sentinel Hub nécessite la création préalable d'une <em>Instance ID</em> via le dashboard CDSE.</>
+              ) : (
+                <>⚠ Identifiants CDSE absents. Active la couche NDVI/Couleur/NDWI haute résolution.</>
+              )}
             </p>
             <p className="mt-2 text-[10px] text-muted-foreground">
               Données : ESA Copernicus Sentinel-2 · Licence CC BY-SA 4.0
@@ -743,33 +833,18 @@ export default function Dashboard() {
           </div>
         </Section>
 
-        {/* ── Consignes officielles ── */}
-        <Section id="safety" title="Consignes officielles" icon={ShieldAlert}>
+        <Section title="Consignes officielles" icon={ShieldAlert}
+          open={openSection === "safety"}
+          onToggle={() => toggleSection("safety")}>
           <div className="grid gap-3 sm:grid-cols-2">
-            <SafetyCard
-              variant="emergency"
-              icon={Phone}
-              title="Témoin d'un départ de feu"
-              body={<>Appelez le <strong>18 ou 112</strong> immédiatement, même si le feu semble petit. Localisez : commune, route, lieu-dit, PK. Ne vous approchez pas, éloignez-vous <strong>dos au vent</strong>.</>}
-            />
-            <SafetyCard
-              variant="warning"
-              icon={Skull}
-              title="Si le feu approche de chez vous"
-              body={<>Abritez-vous dans un bâtiment en dur. Fermez volets, fenêtres, portes. Calfeutrez avec linges humides. Arrêtez VMC et clim. Fermez bouteilles de gaz à l'extérieur. <strong>Habillez-vous en coton couvrant</strong>.</>}
-            />
-            <SafetyCard
-              variant="warning"
-              icon={Bell}
-              title="Fumées : se protéger"
-              body={<>Restez à l'intérieur, fenêtres fermées, effort physique limité. <strong>Masque FFP2</strong> si vous devez sortir. Asthmatiques,cardiaques, âgés : vigilance renforcée, appelez le <strong>15</strong> en cas de gêne.</>}
-            />
-            <SafetyCard
-              variant="info"
-              icon={Eye}
-              title="Prévention (9 feux sur 10 d'origine humaine)"
-              body={<>Ni feu, ni barbecue, ni mégot en forêt. Reportez les travaux à étincelles aux heures fraîches. Débroussaillez autour de votre habitation (obligation OLD).</>}
-            />
+            <SafetyCard variant="emergency" icon={Phone} title="Témoin d'un départ de feu"
+              body={<>Appelez le <strong>18 ou 112</strong> immédiatement, même si le feu semble petit. Localisez : commune, route, lieu-dit, PK. Ne vous approchez pas, éloignez-vous <strong>dos au vent</strong>.</>} />
+            <SafetyCard variant="warning" icon={Skull} title="Si le feu approche de chez vous"
+              body={<>Abritez-vous dans un bâtiment en dur. Fermez volets, fenêtres, portes. Calfeutrez avec linges humides. Arrêtez VMC et clim. Fermez bouteilles de gaz à l'extérieur. <strong>Habillez-vous en coton couvrant</strong>.</>} />
+            <SafetyCard variant="warning" icon={Bell} title="Fumées : se protéger"
+              body={<>Restez à l'intérieur, fenêtres fermées, effort physique limité. <strong>Masque FFP2</strong> si vous devez sortir. Asthmatiques, cardiaques, âgés : vigilance renforcée, appelez le <strong>15</strong> en cas de gêne.</>} />
+            <SafetyCard variant="info" icon={Eye} title="Prévention (9 feux sur 10 d'origine humaine)"
+              body={<>Ni feu, ni barbecue, ni mégot en forêt. Reportez les travaux à étincelles aux heures fraîches. Débroussaillez autour de votre habitation (obligation OLD).</>} />
           </div>
           <div className="mt-4 rounded-lg border border-border/40 bg-card/30 p-3 text-[11px]">
             <strong>S'informer :</strong>{" "}
@@ -779,27 +854,16 @@ export default function Dashboard() {
           </div>
         </Section>
 
-        {/* ── Sources & attribution ── */}
-        <Section id="sources" title="Sources & attribution" icon={Eye}>
+        <Section title="Sources & attribution" icon={Eye}
+          open={openSection === "sources"}
+          onToggle={() => toggleSection("sources")}>
           <div className="space-y-2 text-xs text-muted-foreground">
-            <p>
-              <strong className="text-foreground">NASA FIRMS</strong> · Points chauds VIIRS S-NPP / NOAA-20, MODIS · Données quasi temps réel · 1-3 h de latence.
-            </p>
-            <p>
-              <strong className="text-foreground">Open-Meteo</strong> · Météo (AROME France HD ~1,5 km) + Air Quality (CAMS Copernicus) · <a className="underline" href="https://open-meteo.com/" target="_blank" rel="noreferrer">CC BY 4.0</a>.
-            </p>
-            <p>
-              <strong className="text-foreground">OpenAQ</strong> · Stations ATMO Nouvelle-Aquitaine en Gironde · <a className="underline" href="https://openaq.org/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a>.
-            </p>
-            <p>
-              <strong className="text-foreground">ESA Copernicus</strong> · Sentinel-2 (CDSE) · <a className="underline" href="https://dataspace.copernicus.eu/" target="_blank" rel="noreferrer">Licence Copernicus</a>.
-            </p>
-            <p>
-              <strong className="text-foreground">IGN</strong> · BD Forêt V2, RGE ALTI · Données ouvertes · <a className="underline" href="https://www.ign.fr/" target="_blank" rel="noreferrer">Licence Etalab 2.0</a>.
-            </p>
-            <p>
-              <strong className="text-foreground">OpenStreetMap</strong> · Fond cartographique · <a className="underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">ODbL</a> · © contributeurs.
-            </p>
+            <p><strong className="text-foreground">NASA FIRMS</strong> · Points chauds VIIRS S-NPP / NOAA-20, MODIS · Données quasi temps réel · 1-3 h de latence.</p>
+            <p><strong className="text-foreground">Open-Meteo</strong> · Météo (AROME France HD ~1,5 km) + Air Quality (CAMS Copernicus) · <a className="underline" href="https://open-meteo.com/" target="_blank" rel="noreferrer">CC BY 4.0</a>.</p>
+            <p><strong className="text-foreground">OpenAQ</strong> · Stations ATMO Nouvelle-Aquitaine en Gironde · <a className="underline" href="https://openaq.org/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a>.</p>
+            <p><strong className="text-foreground">ESA Copernicus</strong> · Sentinel-2 (CDSE) · <a className="underline" href="https://dataspace.copernicus.eu/" target="_blank" rel="noreferrer">Licence Copernicus</a>.</p>
+            <p><strong className="text-foreground">IGN</strong> · BD Forêt V2, RGE ALTI · Données ouvertes · <a className="underline" href="https://www.ign.fr/" target="_blank" rel="noreferrer">Licence Etalab 2.0</a>.</p>
+            <p><strong className="text-foreground">OpenStreetMap</strong> · Fond cartographique · <a className="underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">ODbL</a> · © contributeurs.</p>
             <p className="mt-3 border-t border-border/40 pt-3">
               <strong className="text-foreground">PyroScope 33</strong> · Projet open source éducatif.{" "}
               <a className="underline" href="#/about">En savoir plus</a> · Code source disponible.
@@ -813,112 +877,6 @@ export default function Dashboard() {
           ⚠ {error}
         </div>
       )}
-    </div>
-  );
-}
-
-// ── Sous-composants ───────────────────────────────────────────────────
-
-function StatChip({ label, value, tone = "muted", icon: Icon }: {
-  label: string; value: string; tone?: "muted" | "safe" | "warning" | "fire"; icon: typeof Flame;
-}) {
-  const toneClass = {
-    muted: "text-muted-foreground bg-transparent border-border/40",
-    safe: "text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800",
-    warning: "text-orange-700 dark:text-orange-300 bg-orange-100/60 dark:bg-orange-950/40 border-orange-300 dark:border-orange-800",
-    fire: "text-fire-700 dark:text-fire-300 bg-fire-100/60 dark:bg-fire-950/40 border-fire-300 dark:border-fire-800",
-  }[tone];
-  return (
-    <div className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 ${toneClass}`}>
-      <Icon className="h-3 w-3 shrink-0 opacity-70" />
-      <span className="text-[9px] uppercase tracking-wide opacity-70">{label}</span>
-      <strong className="text-xs">{value}</strong>
-    </div>
-  );
-}
-
-function LayerCard({ active, onToggle, color, title, desc, stat }: {
-  active: boolean; onToggle: () => void; color: string;
-  title: string; desc: string; stat?: string;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      className={`text-left rounded-lg border p-3 transition-colors ${
-        active
-          ? "border-fire-700/60 bg-fire-50/40 dark:bg-fire-950/30"
-          : "border-border/40 bg-card/30 opacity-60 hover:opacity-90"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span className={`h-3 w-3 rounded-full ${active ? color : "bg-muted-foreground/40"}`} />
-        <span className="text-xs font-bold">{title}</span>
-      </div>
-      <p className="mt-1.5 text-[11px] text-muted-foreground">{desc}</p>
-      {stat && (
-        <p className="mt-2 text-xs font-semibold text-foreground">{stat}</p>
-      )}
-    </button>
-  );
-}
-
-function PollutentCard({ label, unit, value, limit }: { label: string; unit: string; value: number | null; limit: number }) {
-  const overLimit = value !== null && value > limit;
-  const tone = value === null ? "muted" : overLimit ? "fire" : value > limit * 0.7 ? "warning" : "safe";
-  const tones = {
-    muted: "border-border/40 text-muted-foreground",
-    safe: "border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300",
-    warning: "border-orange-300 dark:border-orange-800 text-orange-700 dark:text-orange-300",
-    fire: "border-red-300 dark:border-red-800 text-red-700 dark:text-red-300",
-  };
-  return (
-    <div className={`rounded-lg border p-3 ${tones[tone]}`}>
-      <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
-      <p className="text-2xl font-bold">
-        {value !== null ? value.toFixed(unit === "µg/m³" ? 1 : unit === "" ? 3 : 1) : "—"}
-        <span className="ml-1 text-[10px] font-normal opacity-60">{unit}</span>
-      </p>
-      <p className="text-[10px] opacity-60">limite OMS : {limit} {unit}</p>
-    </div>
-  );
-}
-
-function PollutantCard({ label, unit, value, limit }: { label: string; unit: string; value: number | null; limit: number }) {
-  // Alias to keep backward-compat
-  return <PollutentCard label={label} unit={unit} value={value} limit={limit} />;
-}
-
-function WeatherCard({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="rounded-lg border border-border/40 bg-card/30 p-3">
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 text-2xl font-bold">{value}</p>
-      <p className="mt-1 text-[10px] text-muted-foreground">{detail}</p>
-    </div>
-  );
-}
-
-function SafetyCard({ variant, icon: Icon, title, body }: {
-  variant: "emergency" | "warning" | "info";
-  icon: typeof Flame; title: string; body: React.ReactNode;
-}) {
-  const variants = {
-    emergency: "border-red-500 bg-red-50 dark:bg-red-950/30",
-    warning: "border-orange-500 bg-orange-50 dark:bg-orange-950/30",
-    info: "border-blue-500 bg-blue-50 dark:bg-blue-950/30",
-  };
-  const iconColor = {
-    emergency: "text-red-600",
-    warning: "text-orange-600",
-    info: "text-blue-600",
-  };
-  return (
-    <div className={`rounded-lg border-2 p-4 ${variants[variant]}`}>
-      <div className="mb-2 flex items-center gap-2">
-        <Icon className={`h-5 w-5 ${iconColor[variant]}`} />
-        <h3 className="text-sm font-bold">{title}</h3>
-      </div>
-      <p className="text-xs leading-relaxed">{body}</p>
     </div>
   );
 }
