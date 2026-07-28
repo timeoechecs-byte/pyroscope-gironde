@@ -248,8 +248,7 @@ function generateSampleData(layer: string, format: string): string {
   return warning + csvLines.join("\n");
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getSampleGeoJSON(layer: string): any {
+function getSampleGeoJSON(layer: string) {
   const features = [];
   const coords = [
     [-0.65, 44.85],
@@ -337,7 +336,6 @@ function getSampleGeoJSON(layer: string): any {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getSampleRows(layer: string): Record<string, string | number>[] {
   if (layer === "risk") {
     return [

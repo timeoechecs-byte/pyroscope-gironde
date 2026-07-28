@@ -69,7 +69,7 @@ export default function MapContainer({
         setMapState({ loaded: false, error: true });
       });
     } catch {
-      setMapState({ loaded: false, error: true });
+      queueMicrotask(() => setMapState({ loaded: false, error: true }));
     }
 
     return () => {

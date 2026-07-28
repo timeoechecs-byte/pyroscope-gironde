@@ -10,7 +10,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   ArrowRight,
-  Eye,
   Flame,
   Map,
   Thermometer,
@@ -18,7 +17,6 @@ import {
   Trees,
   Shield,
   Satellite,
-  Grip,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router";
@@ -26,12 +24,6 @@ import { useNavigate } from "react-router";
 const fadeIn = {
   initial: { opacity: 0, y: 20 },
   animate: { opacity: 1, y: 0 },
-};
-
-const stagger = {
-  animate: {
-    transition: { staggerChildren: 0.1 },
-  },
 };
 
 export default function Landing() {

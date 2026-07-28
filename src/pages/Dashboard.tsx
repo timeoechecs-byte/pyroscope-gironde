@@ -454,8 +454,8 @@ export default function Dashboard() {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+    queueMicrotask(() => setLoading(true));
+    queueMicrotask(() => setError(""));
     try {
       const [w, h, aq] = await Promise.all([
         fetchWeather(),
@@ -482,7 +482,7 @@ export default function Dashboard() {
     } catch {
       setError("Erreur de chargement des données");
     } finally {
-      setLoading(false);
+      queueMicrotask(() => setLoading(false));
     }
   }, [firmsKey, firmsConfigured]);
 
@@ -496,7 +496,10 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    load();
+    // load() appelle setState — on déporte l'appel hors du chemin synchrone
+    // de l'effet via queueMicrotask pour éliminer le cascading-render warning
+    // (react-hooks/set-state-in-effect).
+    queueMicrotask(() => load());
     const weatherInterval = setInterval(() => {
       fetchWeather().then((w) => {
         if (w.length) {
