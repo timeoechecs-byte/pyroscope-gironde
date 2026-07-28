@@ -17,7 +17,7 @@ import IsothermLayer from "@/components/IsothermLayer";
 import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
-import { getFirmsApiKey } from "@/config/api-keys";
+import { getFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -74,7 +74,51 @@ function riskLevel(score: number): { label: string; color: string; bg: string } 
   return { label: "Très élevé", color: "text-red-300", bg: "bg-red-900/40 border-red-600/50" };
 }
 
+// ── Air Quality types ─────────────────────────────────────────────────
+
+interface AirQualityData {
+  pm25: number | null;
+  pm10: number | null;
+  o3: number | null;
+  no2: number | null;
+  aod: number | null;
+  uvIndex: number | null;
+  time: string;
+}
+
 // ── API calls ──────────────────────────────────────────────────────────
+
+async function fetchAirQuality(apiKey: string): Promise<AirQualityData> {
+  const empty = { pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" };
+  try {
+    // Coordonnées centre Gironde
+    const lat = 44.8, lon = -0.5;
+    const r = await fetch(
+      `https://api.openaq.org/v2/latest?coordinates=${lat},${lon}&radius=100000&limit=5`,
+      { headers: { "X-API-Key": apiKey } },
+    );
+    if (!r.ok) return empty;
+    const j = await r.json();
+    if (!j?.results?.[0]?.measurements) return empty;
+    const measurements = j.results[0].measurements as Array<{ parameter: string; value: number }>;
+    const findVal = (param: string) => {
+      // L'API peut retourner pm25, pm10, o3, no2, etc.
+      const m = measurements.find((m) => m.parameter === param);
+      return m ? m.value : null;
+    };
+    return {
+      pm25: findVal("pm25"),
+      pm10: findVal("pm10"),
+      o3: findVal("o3"),
+      no2: findVal("no2"),
+      aod: findVal("aod") ?? findVal("aerosol_optical_depth"),
+      uvIndex: findVal("uv_index"),
+      time: new Date().toLocaleTimeString("fr-FR"),
+    };
+  } catch {
+    return empty;
+  }
+}
 
 async function fetchWeather(): Promise<WeatherPoint[]> {
   const results = await Promise.all(
@@ -149,15 +193,18 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   // ── Clés API ──────────────────────────────────────────────────────
-  // Lues AUTOMATIQUEMENT depuis Freebuff Keys UI (VITE_FIRMS_API_KEY)
+  // Lues AUTOMATIQUEMENT depuis Freebuff Keys UI
   // via src/config/api-keys.ts. Aucune action manuelle nécessaire.
   const firmsKey = getFirmsApiKey();
   const firmsConfigured = Boolean(firmsKey);
+  const openaqKey = getOpenAqApiKey();
+  const openaqConfigured = hasOpenAqApiKey();
 
   // ── Données sources ────────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherPoint[]>([]);
   const [weatherTime, setWeatherTime] = useState("");
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
+  const [airQuality, setAirQuality] = useState<AirQualityData>({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -165,7 +212,7 @@ export default function Dashboard() {
     setLoading(true);
     setError("");
     try {
-      const [w, h] = await Promise.all([
+      const [w, h, aq] = await Promise.all([
         fetchWeather(),
         firmsConfigured && firmsKey
           ? fetchFirms(firmsKey).catch(() => {
@@ -173,18 +220,36 @@ export default function Dashboard() {
               return [];
             })
           : Promise.resolve([]),
+        openaqConfigured && openaqKey
+          ? fetchAirQuality(openaqKey).catch(() => ({
+              pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "",
+            }))
+          : Promise.resolve({ pm25: null, pm10: null, o3: null, no2: null, aod: null, uvIndex: null, time: "" }),
       ]);
       setWeather(w);
       setWeatherTime(new Date().toLocaleTimeString("fr-FR"));
       if (h.length > 0) setHotspots(h);
+      setAirQuality(aq);
       if (!w.length) setError("Météo : aucun point de grille disponible");
       if (!firmsConfigured) setError((prev) => (prev ? prev + " · " : "") + "Clé FIRMS manquante — hotspots désactivés");
+      if (!openaqConfigured) setError((prev) => (prev ? prev + " · " : "") + "Clé OpenAQ manquante — qualité de l'air désactivée");
     } catch {
       setError("Erreur de chargement des données");
     } finally {
       setLoading(false);
     }
-  }, [firmsKey, firmsConfigured]);
+  }, [firmsKey, firmsConfigured, openaqKey, openaqConfigured]);
+
+  // Re-fetch air quality toutes les 15 minutes aussi (en arrière-plan)
+  useEffect(() => {
+    if (!openaqConfigured || !openaqKey) return;
+    const aqInterval = setInterval(() => {
+      fetchAirQuality(openaqKey).then((aq) => {
+        if (aq.pm25 !== null || aq.pm10 !== null) setAirQuality(aq);
+      });
+    }, 15 * 60 * 1000);
+    return () => clearInterval(aqInterval);
+  }, [openaqKey, openaqConfigured]);
 
   // Chargement initial + rafraîchissement automatique
   useEffect(() => {
@@ -412,6 +477,42 @@ export default function Dashboard() {
                 <span>🌧 {weather.length ? weather[0].precip.toFixed(1) : "-"} mm</span>
               </div>
               <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {weatherTime}</p>
+            </div>
+
+            {/* Qualité de l'air */}
+            <div className="rounded border border-border/40 p-2.5">
+              <p className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                <span className="h-3 w-3 text-center text-[8px]">🌍</span> Qualité de l'air (OpenAQ)
+              </p>
+              {!openaqConfigured ? (
+                <p className="text-[9px] text-yellow-600/70">Clé manquante — définir VITE_OPENAQ_API_KEY dans Keys UI</p>
+              ) : airQuality.pm25 === null && airQuality.pm10 === null ? (
+                <p className="text-[9px] text-muted-foreground/50">Aucune donnée disponible</p>
+              ) : (
+                <>
+                  <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground/70">
+                    <span>
+                      PM2.5 : {airQuality.pm25 !== null ? `${airQuality.pm25.toFixed(1)} µg/m³` : "—"}
+                    </span>
+                    <span>
+                      PM10 : {airQuality.pm10 !== null ? `${airQuality.pm10.toFixed(1)} µg/m³` : "—"}
+                    </span>
+                    <span>
+                      O₃ : {airQuality.o3 !== null ? `${airQuality.o3.toFixed(1)} µg/m³` : "—"}
+                    </span>
+                    <span>
+                      NO₂ : {airQuality.no2 !== null ? `${airQuality.no2.toFixed(1)} µg/m³` : "—"}
+                    </span>
+                    {airQuality.aod !== null && (
+                      <span>AOD : {airQuality.aod.toFixed(3)}</span>
+                    )}
+                    {airQuality.uvIndex !== null && (
+                      <span>UV : {airQuality.uvIndex.toFixed(1)}</span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[8px] text-muted-foreground/40">MAJ {airQuality.time}</p>
+                </>
+              )}
             </div>
 
             {/* Erreur */}

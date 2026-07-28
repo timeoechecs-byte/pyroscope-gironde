@@ -13,10 +13,20 @@
 
 export interface ApiKeys {
   firms?: string;
+  openaq?: string;
+  cdseBaseUrl?: string;
+  cdseClientId?: string;
+  cdseClientSecret?: string;
+  cdsApiToken?: string;
 }
 
 // ── Les globaux injectés par vite.config.ts (define) ──────────────────
 declare const __VITE_FIRMS_API_KEY__: string | undefined;
+declare const __VITE_OPENAQ_API_KEY__: string | undefined;
+declare const __VITE_CDSE_BASE_URL__: string | undefined;
+declare const __VITE_CDSE_CLIENT_ID__: string | undefined;
+declare const __VITE_CDSE_CLIENT_SECRET__: string | undefined;
+declare const __VITE_CDS_API_TOKEN__: string | undefined;
 
 // ── Lecture multi-source ───────────────────────────────────────────────
 
@@ -49,6 +59,11 @@ function readKey(
 
 export const API_KEYS: ApiKeys = {
   firms: readKey("VITE_FIRMS_API_KEY", __VITE_FIRMS_API_KEY__, "pyroscope_firms_key"),
+  openaq: readKey("VITE_OPENAQ_API_KEY", __VITE_OPENAQ_API_KEY__, "pyroscope_openaq_key"),
+  cdseBaseUrl: readKey("VITE_CDSE_BASE_URL", __VITE_CDSE_BASE_URL__, "pyroscope_cdse_base_url"),
+  cdseClientId: readKey("VITE_CDSE_CLIENT_ID", __VITE_CDSE_CLIENT_ID__, "pyroscope_cdse_client_id"),
+  cdseClientSecret: readKey("VITE_CDSE_CLIENT_SECRET", __VITE_CDSE_CLIENT_SECRET__, "pyroscope_cdse_client_secret"),
+  cdsApiToken: readKey("VITE_CDS_API_TOKEN", __VITE_CDS_API_TOKEN__, "pyroscope_cds_api_token"),
 };
 
 export function getFirmsApiKey(): string | undefined {
@@ -62,4 +77,24 @@ export function hasFirmsApiKey(): boolean {
 export function setFirmsApiKey(key: string): void {
   localStorage.setItem("pyroscope_firms_key", key);
   (API_KEYS as Record<string, string | undefined>).firms = key;
+}
+
+export function getOpenAqApiKey(): string | undefined {
+  return API_KEYS.openaq;
+}
+
+export function hasOpenAqApiKey(): boolean {
+  return Boolean(API_KEYS.openaq);
+}
+
+export function getCdseConfig() {
+  return {
+    baseUrl: API_KEYS.cdseBaseUrl,
+    clientId: API_KEYS.cdseClientId,
+    clientSecret: API_KEYS.cdseClientSecret,
+  };
+}
+
+export function getCdsApiToken(): string | undefined {
+  return API_KEYS.cdsApiToken;
 }
