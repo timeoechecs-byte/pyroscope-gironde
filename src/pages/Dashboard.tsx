@@ -18,7 +18,7 @@ import FirePerimeterLayer from "@/components/FirePerimeterLayer";
 import type { FirePerimeter } from "@/components/FirePerimeterLayer";
 import { estimateFirePerimeters } from "@/components/FirePerimeterLayer";
 import SentinelMapLayer from "@/components/SentinelMapLayer";
-import { getFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
+import { getFirmsApiKey, hasFirmsApiKey, getOpenAqApiKey, hasOpenAqApiKey, getCdseConfig } from "@/config/api-keys";
 import {
   Flame,
   LogOut,
@@ -194,11 +194,9 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  // ── Clés API ──────────────────────────────────────────────────────
-  // Lues AUTOMATIQUEMENT depuis Freebuff Keys UI
-  // via src/config/api-keys.ts. Aucune action manuelle nécessaire.
+  // ── Clés API (hardcodées dans api-keys.ts) ─────────────────────
   const firmsKey = getFirmsApiKey();
-  const firmsConfigured = Boolean(firmsKey);
+  const firmsConfigured = hasFirmsApiKey();
   const openaqKey = getOpenAqApiKey();
   const openaqConfigured = hasOpenAqApiKey();
   const cdseConfig = getCdseConfig();
@@ -235,8 +233,7 @@ export default function Dashboard() {
       if (h.length > 0) setHotspots(h);
       setAirQuality(aq);
       if (!w.length) setError("Météo : aucun point de grille disponible");
-      if (!firmsConfigured) setError((prev) => (prev ? prev + " · " : "") + "Clé FIRMS manquante — hotspots désactivés");
-      if (!openaqConfigured) setError((prev) => (prev ? prev + " · " : "") + "Clé OpenAQ manquante — qualité de l'air désactivée");
+      // Les clés sont hardcodées dans api-keys.ts — toujours configurées
     } catch {
       setError("Erreur de chargement des données");
     } finally {
